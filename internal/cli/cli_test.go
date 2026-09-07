@@ -89,7 +89,7 @@ func TestUnimplementedCommands(t *testing.T) {
 		"new": {}, "move": {}, "pick": {},
 		"guard-write": {}, "update": {},
 		"doctor": {}, "config": {},
-		"version": {}, "install": {},
+		"version": {}, "install": {}, "req": {},
 	}
 	names := append([]string{"ls"}, commandNames...)
 	for _, name := range names {

@@ -39,6 +39,7 @@ var commandNames = []string{
 	"guard-write",
 	"update",
 	"subscribe",
+	"req",
 }
 
 var aliases = map[string]string{
