@@ -30,7 +30,10 @@ func (a *App) detailRenderWidth() int {
 
 // renderedDetail returns the styled body lines, re-rendering when needed.
 func (a *App) renderedDetail() []string {
-	doc := a.detailDocument()
+	doc := ""
+	if a.Detail != nil {
+		doc = a.Detail.Document
+	}
 	width := a.detailRenderWidth()
 	theme := resolveTheme(a.Theme)
 	key := theme + "\x00" + itoa(width) + "\x00" + doc
@@ -44,63 +47,6 @@ func (a *App) renderedDetail() []string {
 	}
 	a.detailCache = detailRender{key: key, styled: styled, plain: plain}
 	return styled
-}
-
-// detailDocument returns the markdown body for the current detail panel,
-// synthesizing a requirements view when the requirement column is selected.
-func (a *App) detailDocument() string {
-	if a.Detail != nil {
-		return a.Detail.Document
-	}
-	if a.DetailReq != nil {
-		return a.renderRequirementDocument(*a.DetailReq)
-	}
-	return ""
-}
-
-// renderRequirementDocument composes a synthetic markdown body for the detail
-// panel: the requirement card followed by a "linked tasks" section that
-// reports each linked task id, title, state, and progress.
-func (a *App) renderRequirementDocument(req Requirement) string {
-	var b strings.Builder
-	if req.Document != "" {
-		b.WriteString(req.Document)
-		b.WriteString("\n\n")
-	}
-	b.WriteString("## ")
-	b.WriteString(a.Context.ReqLinkedHeading)
-	b.WriteString("\n\n")
-	if len(req.Linked) == 0 {
-		b.WriteString(a.Context.ReqLinkedNone)
-		b.WriteString("\n")
-	} else {
-		for _, link := range req.Linked {
-			checkbox := "- [ ]"
-			if !link.Missing && link.State == "done" {
-				checkbox = "- [x]"
-			}
-			state := link.State
-			if state == "" {
-				state = "-"
-			}
-			if link.Missing {
-				state = "missing"
-			}
-			title := link.Title
-			if title == "" {
-				title = link.ID
-			}
-			b.WriteString(checkbox)
-			b.WriteString(" `")
-			b.WriteString(link.ID)
-			b.WriteString("` ")
-			b.WriteString(title)
-			b.WriteString(" — ")
-			b.WriteString(state)
-			b.WriteString("\n")
-		}
-	}
-	return b.String()
 }
 
 // detailLines are the plain-text body lines used by search, the cursor and selection copying.
@@ -227,22 +173,14 @@ func (a *App) renderDetailView() string {
 		return padBlock(styleFor("bold", p).Render(a.Context.TooSmall), w, h, p)
 	}
 	task := Task{}
-	state := ""
 	if a.Detail != nil {
 		task = *a.Detail
-		state = task.State
-	} else if a.DetailReq != nil {
-		state = RequirementColumn
-		task = Task{Title: a.DetailReq.Title, State: a.DetailReq.Status, Assignee: a.DetailReq.Source}
 	}
 	title := task.Title
 	if title == "" {
-		if a.DetailReq != nil {
-			title = a.DetailReq.RequirementID
-		} else {
-			title = task.TaskID
-		}
+		title = task.TaskID
 	}
+	state := task.State
 	inner := w - 2
 	if inner < 1 {
 		inner = 1
@@ -252,12 +190,7 @@ func (a *App) renderDetailView() string {
 		contentWidth = 1
 	}
 
-	var meta string
-	if a.DetailReq != nil {
-		meta = joinNonEmpty(a.DetailReq.RequirementID, a.DetailReq.Status, itoa(a.DetailReq.Done)+"/"+itoa(a.DetailReq.Total))
-	} else {
-		meta = joinNonEmpty(task.TaskID, a.Context.stateLabel(task.State), a.Context.sizeLabel(task.Kind), task.Type, orUnassigned(task.Assignee, a.Context.Unassigned))
-	}
+	meta := joinNonEmpty(task.TaskID, a.Context.stateLabel(task.State), a.Context.sizeLabel(task.Kind), task.Type, orUnassigned(task.Assignee, a.Context.Unassigned))
 	metaRow := a.panelRow(p, state, " "+styleFor("dim", p).Render(padLine(clipText(meta, contentWidth), contentWidth))+" ", w, true)
 
 	var ruleRow string
@@ -289,23 +222,21 @@ func (a *App) renderDetailView() string {
 		a.renderHeader(p, w),
 		p.fillLine(w),
 		strings.Join(rows, "\n"),
-		a.renderDetailStatusBar(p, w, task, a.DetailReq),
+		a.renderDetailStatusBar(p, w, task),
 	)
 }
 
 // renderDetailStatusBar is the status bar of the detail screen: the task identity on the left, the back hint on the right.
-func (a *App) renderDetailStatusBar(p palette, w int, task Task, req *Requirement) string {
+func (a *App) renderDetailStatusBar(p palette, w int, task Task) string {
 	if notice := a.transientNotice(); notice != "" {
 		return styleFor("footer", p).Render(padLine(" "+clipText(notice, max(0, w-1)), w))
 	}
 	segments := []string{"KANDER"}
-	if req != nil {
-		segments = append(segments, req.RequirementID, req.Status)
-	} else if task.TaskID != "" {
+	if task.TaskID != "" {
 		segments = append(segments, task.TaskID)
-		if label := a.Context.stateLabel(task.State); task.State != "" {
-			segments = append(segments, label)
-		}
+	}
+	if label := a.Context.stateLabel(task.State); task.State != "" {
+		segments = append(segments, label)
 	}
 	left := " " + strings.Join(segments, "  "+a.Glyphs["vbar"]+"  ")
 	right := a.Context.DetailStatusHelp + " "

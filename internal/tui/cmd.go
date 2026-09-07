@@ -94,12 +94,6 @@ func Run(_ []string) int {
 		}
 		return loadTaskPayload(root, id)
 	}
-	getRequirement := func(id string) (Requirement, error) {
-		if emptyBoard {
-			return Requirement{}, fmt.Errorf("%s", t("board.board_directory_not_found_run_inside_a_project_or"))
-		}
-		return loadRequirementPayload(root, id)
-	}
 	initial := BoardPayload{}
 	if !emptyBoard {
 		initial, err = getBoard()
@@ -107,7 +101,7 @@ func Run(_ []string) int {
 			return fail(err)
 		}
 	}
-	app := newApp(prefs.Single, prefs.Refresh, ctx, getBoard, getTask, getRequirement, prefs.Theme, prefs.Columns, saveColumns, copyToClipboard)
+	app := newApp(prefs.Single, prefs.Refresh, ctx, getBoard, getTask, prefs.Theme, prefs.Columns, saveColumns, copyToClipboard)
 	app.MinColumnWidth = clampMinColumnWidth(prefs.MinColumnWidth)
 	app.Model.SetBoard(initial)
 	if postInstall || !configExists {
