@@ -32,6 +32,10 @@ type pageContext struct {
 	UnknownTheme     string
 	StateLabels      map[string]string
 	SizeLabels       map[string]string
+	ReqSourcePrefix  string
+	ReqEmpty         string
+	ReqLinkedHeading string
+	ReqLinkedNone    string
 }
 
 func tuiPageContext() pageContext {
@@ -68,18 +72,23 @@ func tuiPageContext() pageContext {
 		TermInitFail: t("tui.failed_to_initialize_terminal"),
 		UnknownTheme: t("tui.unknown_theme"),
 		StateLabels: map[string]string{
-			"backlog":  t("tui.backlog"),
-			"todo":     t("tui.todo"),
-			"working":  t("tui.working"),
-			"review":   t("tui.review"),
-			"done":     t("tui.done"),
-			"archived": t("tui.archived"),
-			"trash":    t("tui.trash"),
+			"backlog":     t("tui.backlog"),
+			"todo":        t("tui.todo"),
+			"working":     t("tui.working"),
+			"review":      t("tui.review"),
+			"done":        t("tui.done"),
+			"archived":    t("tui.archived"),
+			"trash":       t("tui.trash"),
+			"requirements": t("tui.requirements"),
 		},
 		SizeLabels: map[string]string{
 			"small": t("tui.small"),
 			"large": t("tui.large"),
 		},
+		ReqSourcePrefix:  t("tui.req_source_prefix"),
+		ReqEmpty:         t("tui.req_empty"),
+		ReqLinkedHeading: t("tui.req_linked_heading"),
+		ReqLinkedNone:    t("tui.req_linked_none"),
 	}
 }
 

@@ -39,12 +39,14 @@ type App struct {
 	Context        pageContext
 	GetBoard       func() (BoardPayload, error)
 	GetTask        func(string) (Task, error)
+	GetRequirement func(string) (Requirement, error)
 	CopyFn         copyFn
 	PersistColumns persistFn
 	Now            func() time.Time
 
 	Searching        bool
 	Detail           *Task
+	DetailReq        *Requirement
 	DetailScroll     int
 	DetailSearching  bool
 	DetailQuery      string
@@ -106,7 +108,7 @@ func (a *App) Update(msg tea.Msg) tea.Cmd {
 func (a *App) View() string {
 	var base string
 	switch {
-	case a.Detail != nil && a.Options == nil:
+	case (a.Detail != nil || a.DetailReq != nil) && a.Options == nil:
 		a.ShowCursor = a.DetailSearching
 		base = a.renderDetailView()
 	default:
@@ -126,7 +128,7 @@ func (a *App) View() string {
 	return paintScreen(base, w, h, p)
 }
 
-func newApp(single bool, refresh int, ctx pageContext, getBoard func() (BoardPayload, error), getTask func(string) (Task, error), theme string, columns int, persist persistFn, copy copyFn) *App {
+func newApp(single bool, refresh int, ctx pageContext, getBoard func() (BoardPayload, error), getTask func(string) (Task, error), getRequirement func(string) (Requirement, error), theme string, columns int, persist persistFn, copy copyFn) *App {
 	if copy == nil {
 		copy = copyToClipboard
 	}
@@ -142,6 +144,7 @@ func newApp(single bool, refresh int, ctx pageContext, getBoard func() (BoardPay
 		Context:        ctx,
 		GetBoard:       getBoard,
 		GetTask:        getTask,
+		GetRequirement: getRequirement,
 		CopyFn:         copy,
 		PersistColumns: persist,
 		Now:            time.Now,
@@ -176,40 +179,108 @@ func (a *App) refreshBoard() bool {
 }
 
 func (a *App) refreshOpenDetail() bool {
-	if a.Detail == nil {
-		return false
+	if a.Detail != nil {
+		taskID := a.Detail.TaskID
+		if taskID == "" {
+			return false
+		}
+		previous := a.Model.DetailError
+		next, err := a.GetTask(taskID)
+		if err != nil {
+			a.Model.DetailError = err.Error()
+			return a.Model.DetailError != previous
+		}
+		a.Model.DetailError = ""
+		changed := a.Detail.Document != next.Document ||
+			a.Detail.Title != next.Title ||
+			a.Detail.Time != next.Time ||
+			a.Detail.State != next.State ||
+			a.Detail.Assignee != next.Assignee ||
+			a.Detail.Kind != next.Kind ||
+			a.Detail.TaskGroup != next.TaskGroup ||
+			a.Detail.Type != next.Type
+		a.Detail = &next
+		a.clampDetailCursor()
+		matches := a.detailMatches(nil)
+		if len(matches) > 0 && a.DetailMatchIndex > len(matches)-1 {
+			a.DetailMatchIndex = len(matches) - 1
+		} else if len(matches) == 0 {
+			a.DetailMatchIndex = 0
+		}
+		return changed || previous != ""
 	}
-	taskID := a.Detail.TaskID
-	if taskID == "" {
-		return false
+	if a.DetailReq != nil {
+		reqID := a.DetailReq.RequirementID
+		if reqID == "" {
+			return false
+		}
+		previous := a.Model.DetailError
+		next, err := a.GetRequirement(reqID)
+		if err != nil {
+			a.Model.DetailError = err.Error()
+			return a.Model.DetailError != previous
+		}
+		a.Model.DetailError = ""
+		prevLinks := requirementLinkKey(a.DetailReq.Linked)
+		nextLinks := requirementLinkKey(next.Linked)
+		changed := a.DetailReq.Document != next.Document ||
+			a.DetailReq.Title != next.Title ||
+			a.DetailReq.Status != next.Status ||
+			a.DetailReq.Source != next.Source ||
+			a.DetailReq.Done != next.Done ||
+			a.DetailReq.Total != next.Total ||
+			prevLinks != nextLinks
+		a.DetailReq = &next
+		a.clampDetailCursor()
+		matches := a.detailMatches(nil)
+		if len(matches) > 0 && a.DetailMatchIndex > len(matches)-1 {
+			a.DetailMatchIndex = len(matches) - 1
+		} else if len(matches) == 0 {
+			a.DetailMatchIndex = 0
+		}
+		return changed || previous != ""
 	}
-	previous := a.Model.DetailError
-	next, err := a.GetTask(taskID)
-	if err != nil {
-		a.Model.DetailError = err.Error()
-		return a.Model.DetailError != previous
+	return false
+}
+
+func requirementLinkKey(links []RequirementLinked) string {
+	if len(links) == 0 {
+		return ""
 	}
-	a.Model.DetailError = ""
-	changed := a.Detail.Document != next.Document ||
-		a.Detail.Title != next.Title ||
-		a.Detail.Time != next.Time ||
-		a.Detail.State != next.State ||
-		a.Detail.Assignee != next.Assignee ||
-		a.Detail.Kind != next.Kind ||
-		a.Detail.TaskGroup != next.TaskGroup ||
-		a.Detail.Type != next.Type
-	a.Detail = &next
-	a.clampDetailCursor()
-	matches := a.detailMatches(nil)
-	if len(matches) > 0 && a.DetailMatchIndex > len(matches)-1 {
-		a.DetailMatchIndex = len(matches) - 1
-	} else if len(matches) == 0 {
-		a.DetailMatchIndex = 0
+	parts := make([]string, len(links))
+	for i, link := range links {
+		parts[i] = link.ID + ":" + link.State + ":" + boolStr(link.Missing)
 	}
-	return changed || previous != ""
+	return strings.Join(parts, ",")
+}
+
+func boolStr(v bool) string {
+	if v {
+		return "m"
+	}
+	return "-"
 }
 
 func (a *App) openDetail() {
+	if a.Model.CurrentState() == RequirementColumn {
+		selected := a.Model.SelectedRequirement()
+		if selected == nil {
+			return
+		}
+		req, err := a.GetRequirement(selected.RequirementID)
+		if err != nil {
+			a.Model.DetailError = err.Error()
+			return
+		}
+		a.DetailReq = &req
+		a.Detail = nil
+		a.DetailScroll = 0
+		a.DetailCursor = [2]int{0, 0}
+		a.resetDetailSearch()
+		a.resetMouseSelection()
+		a.Model.DetailError = ""
+		return
+	}
 	selected := a.Model.SelectedTask()
 	if selected == nil {
 		return
@@ -220,6 +291,7 @@ func (a *App) openDetail() {
 		return
 	}
 	a.Detail = &task
+	a.DetailReq = nil
 	a.DetailScroll = 0
 	a.DetailCursor = [2]int{0, 0}
 	a.resetDetailSearch()
@@ -229,6 +301,7 @@ func (a *App) openDetail() {
 
 func (a *App) closeDetail() {
 	a.Detail = nil
+	a.DetailReq = nil
 	a.DetailScroll = 0
 	a.resetDetailSearch()
 	a.resetMouseSelection()

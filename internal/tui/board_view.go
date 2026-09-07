@@ -150,6 +150,9 @@ func (a *App) visibleTaskCount() int {
 func (a *App) renderColumnPanel(p palette, col boardLayout, bodyHeight int, first, last, moreLeft, moreRight bool) string {
 	width := col.Width
 	focused := col.State == a.Model.CurrentState()
+	if col.State == RequirementColumn {
+		return a.renderRequirementPanel(p, width, bodyHeight, focused, first, last, moreLeft, moreRight)
+	}
 	tasks, scroll, capacity := columnTaskWindow(a.Model, col.State, bodyHeight)
 
 	label := a.Context.stateLabel(col.State)
@@ -187,6 +190,76 @@ func (a *App) renderColumnPanel(p palette, col boardLayout, bodyHeight int, firs
 	}
 	lines = append(lines, a.panelBottom(p, col.State, width, focused))
 	return strings.Join(lines, "\n")
+}
+
+// renderRequirementPanel draws the requirements column: a list of requirement
+// cards rendered with the same card height as task cards. The column reads
+// from BoardModel.Requirements rather than TasksFor.
+func (a *App) renderRequirementPanel(p palette, width, bodyHeight int, focused, first, last, moreLeft, moreRight bool) string {
+	cards, scroll, capacity := columnRequirementWindow(a.Model, bodyHeight)
+	label := a.Context.stateLabel(RequirementColumn)
+	single := a.Model.Single || (first && last && len(a.Model.States()) > 1)
+	showLeft := (single || first) && moreLeft
+	showRight := (single || last) && moreRight
+	if single && len(a.Model.States()) > 1 {
+		showLeft, showRight = true, true
+	}
+	lines := []string{a.panelTop(p, RequirementColumn, label, itoa(len(cards)), width, focused, showLeft, showRight)}
+	contentWidth := width - panelChrome
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+	body := make([]string, 0, bodyHeight)
+	if len(cards) == 0 {
+		body = append(body, styleFor("dim", p).Render(centerText(a.Context.Empty, width-2)))
+	} else {
+		end := scroll + capacity
+		if end > len(cards) {
+			end = len(cards)
+		}
+		for _, card := range cards[scroll:end] {
+			body = append(body, a.renderRequirementCard(p, card, contentWidth, focused)...)
+			body = append(body, "")
+		}
+	}
+	for i := 0; i < bodyHeight; i++ {
+		content := ""
+		if i < len(body) {
+			content = body[i]
+		}
+		lines = append(lines, a.panelRow(p, RequirementColumn, content, width, focused))
+	}
+	lines = append(lines, a.panelBottom(p, RequirementColumn, width, focused))
+	return strings.Join(lines, "\n")
+}
+
+func (a *App) renderRequirementCard(p palette, card Requirement, contentWidth int, focused bool) []string {
+	_ = focused
+	title := card.Title
+	if title == "" {
+		title = card.RequirementID
+	}
+	progress := a.requirementProgressLine(card)
+	source := card.Source
+	if source == "" {
+		source = "-"
+	}
+	return []string{
+		clipText(title, contentWidth),
+		clipText(card.RequirementID, contentWidth),
+		clipText(compactTime(orDash(card.CreatedAt))+" "+a.Glyphs["dot"]+" "+card.Status+" "+a.Glyphs["dot"]+" "+progress, contentWidth),
+		clipText(a.Context.ReqSourcePrefix+source, contentWidth),
+	}
+}
+
+// requirementProgressLine renders the "done/total" token for one requirement
+// card. Empty total means the requirement has no linked tasks yet; we keep
+// the title line and let the user discover it via the detail panel.
+func (a *App) requirementProgressLine(card Requirement) string {
+	if card.Total == 0 {
+		return "-"
+	}
+	return itoa(card.Done) + "/" + itoa(card.Total)
 }
 
 // renderCard draws one task card. The card keeps one column of padding on each side and both take part in the coloring,

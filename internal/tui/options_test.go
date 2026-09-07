@@ -48,6 +48,7 @@ func newPanelApp(t *testing.T) *App {
 	app := newApp(true, 30, tuiPageContext(),
 		func() (BoardPayload, error) { return BoardPayload{}, nil },
 		func(string) (Task, error) { return Task{}, nil },
+		func(string) (Requirement, error) { return Requirement{}, nil },
 		"dark", 40, func(int) (config.TUI, error) { return config.TUI{}, nil }, func(string) (bool, string) { return true, "" })
 	app.Width, app.Height = 120, 32
 	return app

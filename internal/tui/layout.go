@@ -102,3 +102,51 @@ func columnTaskWindow(model *BoardModel, state string, bodyHeight int) (tasks []
 	model.Scrolls[state] = scroll
 	return tasks, scroll, capacity
 }
+
+// columnRequirementWindow is the requirements-column counterpart of
+// columnTaskWindow: it pulls the requirement cards currently visible in the
+// scroll window and adjusts the scroll so the selected card stays in view.
+func columnRequirementWindow(model *BoardModel, bodyHeight int) (cards []Requirement, scroll, capacity int) {
+	cards = model.RequirementsFor()
+	capacity = (bodyHeight + 1) / cardHeight
+	if capacity < 1 {
+		capacity = 1
+	}
+	if len(cards) == 0 {
+		model.Scrolls[RequirementColumn] = 0
+		return cards, 0, capacity
+	}
+	selectedID := model.SelectedIDs[RequirementColumn]
+	selectedIndex := 0
+	found := false
+	for i, card := range cards {
+		if card.RequirementID == selectedID {
+			selectedIndex = i
+			found = true
+			break
+		}
+	}
+	if !found {
+		selectedIndex = 0
+		model.SelectedIDs[RequirementColumn] = cards[0].RequirementID
+		model.SelectedIndexes[RequirementColumn] = 0
+	}
+	scroll = model.Scrolls[RequirementColumn]
+	if selectedIndex < scroll {
+		scroll = selectedIndex
+	} else if selectedIndex >= scroll+capacity {
+		scroll = selectedIndex - capacity + 1
+	}
+	maxScroll := len(cards) - capacity
+	if maxScroll < 0 {
+		maxScroll = 0
+	}
+	if scroll < 0 {
+		scroll = 0
+	}
+	if scroll > maxScroll {
+		scroll = maxScroll
+	}
+	model.Scrolls[RequirementColumn] = scroll
+	return cards, scroll, capacity
+}

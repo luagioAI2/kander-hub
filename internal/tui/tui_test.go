@@ -117,7 +117,9 @@ func TestModelNavigationAndSearch(t *testing.T) {
 			{TaskID: "20260820-old-task", Title: "Old item", State: "archived", Type: "Chore", Assignee: "QA"},
 		},
 	})
-	if strings.Join(model.States(), ",") != strings.Join(activeStates, ",") {
+	wantStates := append([]string{}, activeStates...)
+	wantStates = append(wantStates, RequirementColumn)
+	if strings.Join(model.States(), ",") != strings.Join(wantStates, ",") {
 		t.Fatalf("%v", model.States())
 	}
 	model.ColumnIndex = indexOf(model.States(), "todo")
@@ -145,7 +147,9 @@ func TestModelNavigationAndSearch(t *testing.T) {
 	}
 	model.Query = ""
 	model.ToggleArchived()
-	if strings.Join(model.States(), ",") != strings.Join(allStates, ",") {
+	wantStates2 := append([]string{}, activeStates...)
+	wantStates2 = append(wantStates2, RequirementColumn, "archived", "trash")
+	if strings.Join(model.States(), ",") != strings.Join(wantStates2, ",") {
 		t.Fatalf("%v", model.States())
 	}
 	model.ColumnIndex = 0
@@ -154,7 +158,7 @@ func TestModelNavigationAndSearch(t *testing.T) {
 		t.Fatal(model.CurrentState())
 	}
 	model.ToggleArchived()
-	if model.CurrentState() != "done" {
+	if model.CurrentState() != "requirements" {
 		t.Fatal(model.CurrentState())
 	}
 }
@@ -192,7 +196,7 @@ func TestKeepSelectionOnRefresh(t *testing.T) {
 }
 
 func TestThemeCycle(t *testing.T) {
-	app := newApp(true, 60, pageContext{}, func() (BoardPayload, error) { return BoardPayload{}, nil }, func(string) (Task, error) { return Task{}, nil }, "auto", 40, nil, func(string) (bool, string) { return true, "" })
+	app := newApp(true, 60, pageContext{}, func() (BoardPayload, error) { return BoardPayload{}, nil }, func(string) (Task, error) { return Task{}, nil }, func(string) (Requirement, error) { return Requirement{}, nil }, "auto", 40, nil, func(string) (bool, string) { return true, "" })
 	seen := []string{}
 	for range themes {
 		app.handleBoardKey("t")
@@ -289,7 +293,7 @@ func TestCopyAndDetailKeys(t *testing.T) {
 	}
 	app := newApp(true, 60, pageContext{Copied: "Copied", Unassigned: "未指派"}, func() (BoardPayload, error) { return board, nil }, func(id string) (Task, error) {
 		return Task{TaskID: id, Title: "复制测试", State: "todo", Document: "line one\nline two\nline three\n"}, nil
-	}, "auto", 40, nil, func(text string) (bool, string) {
+	}, func(string) (Requirement, error) { return Requirement{}, nil }, "auto", 40, nil, func(text string) (bool, string) {
 		copied = append(copied, text)
 		return true, ""
 	})
@@ -343,7 +347,7 @@ func TestColumnCountPrefs(t *testing.T) {
 		t.Fatal("saving min width must keep columns")
 	}
 	saved := []int{}
-	app := newApp(false, 30, pageContext{}, func() (BoardPayload, error) { return BoardPayload{}, nil }, func(string) (Task, error) { return Task{}, nil }, "auto", 3, func(n int) (config.TUI, error) {
+	app := newApp(false, 30, pageContext{}, func() (BoardPayload, error) { return BoardPayload{}, nil }, func(string) (Task, error) { return Task{}, nil }, func(string) (Requirement, error) { return Requirement{}, nil }, "auto", 3, func(n int) (config.TUI, error) {
 		saved = append(saved, n)
 		return config.TUI{Columns: n}, nil
 	}, nil)
@@ -375,7 +379,7 @@ func TestPageKeys(t *testing.T) {
 	for i := 0; i < 10; i++ {
 		tasks[i] = Task{TaskID: "20260821-page-0" + itoa(i) + "-task", Title: itoa(i), State: "todo"}
 	}
-	app := newApp(true, 30, pageContext{}, func() (BoardPayload, error) { return BoardPayload{Tasks: tasks}, nil }, func(string) (Task, error) { return Task{}, nil }, "auto", 40, nil, nil)
+	app := newApp(true, 30, pageContext{}, func() (BoardPayload, error) { return BoardPayload{Tasks: tasks}, nil }, func(string) (Task, error) { return Task{}, nil }, func(string) (Requirement, error) { return Requirement{}, nil }, "auto", 40, nil, nil)
 	app.Width, app.Height = 80, 24
 	app.Model.SetBoard(BoardPayload{Tasks: tasks})
 	app.Model.ColumnIndex = indexOf(app.Model.States(), "todo")
@@ -395,7 +399,7 @@ func TestRenderKeepsFocusColumn(t *testing.T) {
 		StateLabels: map[string]string{"backlog": "backlog", "todo": "todo", "working": "working", "review": "review", "done": "done"},
 		Empty:       "No tasks",
 		TooSmall:    "Terminal is too small.",
-	}, func() (BoardPayload, error) { return BoardPayload{Tasks: tasks}, nil }, func(string) (Task, error) { return Task{}, nil }, "auto", 2, nil, nil)
+	}, func() (BoardPayload, error) { return BoardPayload{Tasks: tasks}, nil }, func(string) (Task, error) { return Task{}, nil }, func(string) (Requirement, error) { return Requirement{}, nil }, "auto", 2, nil, nil)
 	app.Width, app.Height = 122, 24
 	app.Model.SetBoard(BoardPayload{GeneratedAt: "2026-08-21 00:00:00", Tasks: tasks})
 	headings := viewLine(app, panelTopRow)
@@ -436,8 +440,8 @@ func TestDefaultRunRejectsNonTTY(t *testing.T) {
 func TestJSONContentKeyIgnoresGeneratedAt(t *testing.T) {
 	a := []Task{{TaskID: "t", Title: "x", State: "todo"}}
 	b := []Task{{TaskID: "t", Title: "x", State: "todo"}}
-	if boardContentKey(a) != boardContentKey(b) {
-		t.Fatal(boardContentKey(a))
+	if boardContentKey(a, nil) != boardContentKey(b, nil) {
+		t.Fatal(boardContentKey(a, nil))
 	}
 	raw, _ := json.Marshal(a)
 	if !strings.Contains(string(raw), "task_id") {
@@ -457,7 +461,7 @@ func TestMouseSelectsTask(t *testing.T) {
 	}}
 	app := newApp(false, 30, pageContext{StateLabels: map[string]string{"backlog": "backlog", "todo": "todo"}}, func() (BoardPayload, error) { return board, nil }, func(id string) (Task, error) {
 		return Task{TaskID: id, Title: id, Document: strings.Repeat("line\n", 40)}, nil
-	}, "auto", 40, nil, nil)
+	}, func(string) (Requirement, error) { return Requirement{}, nil }, "auto", 40, nil, nil)
 	app.Width, app.Height = 120, 24
 	app.Model.SetBoard(board)
 	app.Model.FocusState("todo")
@@ -481,7 +485,7 @@ func TestMouseSelectsTask(t *testing.T) {
 
 	hoverApp := newApp(false, 30, pageContext{StateLabels: map[string]string{"backlog": "backlog", "todo": "todo"}}, func() (BoardPayload, error) { return board, nil }, func(id string) (Task, error) {
 		return Task{TaskID: id, Title: id, Document: "body"}, nil
-	}, "auto", 40, nil, nil)
+	}, func(string) (Requirement, error) { return Requirement{}, nil }, "auto", 40, nil, nil)
 	hoverApp.Width, hoverApp.Height = 120, 24
 	hoverApp.Model.SetBoard(board)
 	hoverApp.Model.FocusState("todo")
@@ -497,7 +501,7 @@ func TestMouseSelectsTask(t *testing.T) {
 
 	dbl := newApp(false, 30, pageContext{StateLabels: map[string]string{"backlog": "backlog", "todo": "todo"}}, func() (BoardPayload, error) { return board, nil }, func(id string) (Task, error) {
 		return Task{TaskID: id, Title: id, Document: "body"}, nil
-	}, "auto", 40, nil, nil)
+	}, func(string) (Requirement, error) { return Requirement{}, nil }, "auto", 40, nil, nil)
 	dbl.Width, dbl.Height = 120, 24
 	dbl.Model.SetBoard(board)
 	t1 := now.Add(2 * time.Second)
@@ -523,7 +527,7 @@ func TestDetailRendersMarkdown(t *testing.T) {
 	document := "# 标题\n\n- 第一项\n- 第二项\n"
 	app := newApp(true, 60, pageContext{Unassigned: "未指派"}, func() (BoardPayload, error) { return board, nil }, func(id string) (Task, error) {
 		return Task{TaskID: id, Title: "复制测试", State: "todo", Document: document}, nil
-	}, "auto", 40, nil, nil)
+	}, func(string) (Requirement, error) { return Requirement{}, nil }, "auto", 40, nil, nil)
 	app.Width, app.Height = 80, 24
 	task, _ := app.GetTask("20260822-copy-task")
 	app.Detail = &task
@@ -552,7 +556,7 @@ func TestRefreshOpenDetailUpdatesState(t *testing.T) {
 	state := "todo"
 	app := newApp(true, 30, pageContext{}, func() (BoardPayload, error) { return BoardPayload{}, nil }, func(id string) (Task, error) {
 		return Task{TaskID: id, Title: "same", State: state, Time: "-", Document: "body"}, nil
-	}, "auto", 40, nil, nil)
+	}, func(string) (Requirement, error) { return Requirement{}, nil }, "auto", 40, nil, nil)
 	first, _ := app.GetTask("t1")
 	app.Detail = &first
 	state = "working"
@@ -588,7 +592,7 @@ func TestAutoRefreshInterval(t *testing.T) {
 		payload.GeneratedAt = itoa(calls)
 		payload.Tasks[0].Title = "n" + itoa(calls)
 		return payload, nil
-	}, func(string) (Task, error) { return Task{}, nil }, "auto", 40, nil, nil)
+	}, func(string) (Task, error) { return Task{}, nil }, func(string) (Requirement, error) { return Requirement{}, nil }, "auto", 40, nil, nil)
 	now := time.Now()
 	app.Now = func() time.Time { return now }
 	app.Model.SetBoard(payload)
@@ -635,7 +639,7 @@ func TestAdjustColumnsKeepsOptionsSessionInSync(t *testing.T) {
 		t.Fatal(err)
 	}
 	app := newApp(false, 30, pageContext{}, func() (BoardPayload, error) { return BoardPayload{}, nil },
-		func(string) (Task, error) { return Task{}, nil }, "auto", 3, saveColumns, nil)
+		func(string) (Task, error) { return Task{}, nil }, func(string) (Requirement, error) { return Requirement{}, nil }, "auto", 3, saveColumns, nil)
 	app.Session = session
 	app.handleBoardKey("-")
 	if app.PrefsError != "" {

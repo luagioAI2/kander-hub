@@ -7,7 +7,6 @@ import (
 	"github.com/dualface/kander/internal/board"
 	"github.com/dualface/kander/internal/config"
 )
-
 const (
 	cardHeight = 4
 	// Minimum column width. Cards narrower than this are already unreadable, so showing one column fewer is preferable.
@@ -40,13 +39,24 @@ var (
 	activeStates = []string{"backlog", "todo", "working", "review", "done"}
 	allStates    = append([]string(nil), board.States...)
 	themes       = config.TUIThemes
+	// RequirementColumn is a virtual column dedicated to the requirements pool.
+	// Cards in this column are RequirementSummary entries, never TaskSummary.
+	RequirementColumn = "requirements"
 )
 
-// Task and BoardPayload reuse the domain views of the board package directly, so the parsing rules cannot fork.
-type Task = board.TaskSummary
-type BoardPayload = board.BoardView
+// Type aliases keep the rest of the TUI package agnostic to whether the
+// underlying types come from the board or requirement packages.
+type (
+	Task              = board.TaskSummary
+	BoardPayload      = board.BoardView
+	Requirement       = board.RequirementSummary
+	RequirementLinked = board.RequirementLinkedRef
+)
 
 func knownState(state string) bool {
+	if state == RequirementColumn {
+		return true
+	}
 	for _, item := range allStates {
 		if item == state {
 			return true
@@ -61,10 +71,13 @@ func stateIndex(state string) int {
 			return i
 		}
 	}
-	return len(allStates)
+	if state == RequirementColumn {
+		return len(allStates)
+	}
+	return len(allStates) + 1
 }
 
-func boardContentKey(tasks []Task) string {
+func boardContentKey(tasks []Task, requirements []Requirement) string {
 	type row map[string]string
 	rows := make([]row, 0, len(tasks))
 	for _, task := range tasks {
@@ -88,7 +101,28 @@ func boardContentKey(tasks []Task) string {
 		}
 		rows = append(rows, item)
 	}
-	data, err := json.Marshal(rows)
+	requirementRows := make([]row, 0, len(requirements))
+	for _, req := range requirements {
+		links := make([]string, 0, len(req.Linked))
+		for _, link := range req.Linked {
+			links = append(links, link.ID+"="+link.State)
+		}
+		item := row{
+			"requirement_id": req.RequirementID,
+			"title":          req.Title,
+			"status":         req.Status,
+			"source":         req.Source,
+			"created_at":     req.CreatedAt,
+			"done":           itoa(req.Done),
+			"total":          itoa(req.Total),
+			"links":          strings.Join(links, ","),
+		}
+		requirementRows = append(requirementRows, item)
+	}
+	data, err := json.Marshal(struct {
+		Tasks        []row `json:"t"`
+		Requirements []row `json:"r"`
+	}{rows, requirementRows})
 	if err != nil {
 		return ""
 	}

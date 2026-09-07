@@ -2,7 +2,30 @@ package tui
 
 func (a *App) boardCardHit(x, y int) *mouseSel {
 	hit := a.hitBoard(x, y)
-	if hit == nil || hit.Kind != "task" {
+	if hit == nil {
+		return nil
+	}
+	if hit.Kind == "requirement" {
+		h, _ := a.size()
+		bodyHeight := h - bodyTop - 2
+		cards, scroll, _ := columnRequirementWindow(a.Model, bodyHeight)
+		if hit.Index < scroll || hit.Index >= len(cards) {
+			return nil
+		}
+		layout := a.visibleColumnLayout()
+		colX, colWidth := 0, 1
+		for _, col := range layout {
+			if col.State == RequirementColumn {
+				colX, colWidth = col.X, col.Width
+				break
+			}
+		}
+		if x < colX || x >= colX+colWidth {
+			return nil
+		}
+		return &mouseSel{Kind: "board", TaskID: cards[hit.Index].RequirementID, Line: 0, Col: 0, ContentWidth: colWidth}
+	}
+	if hit.Kind != "task" {
 		return nil
 	}
 	h, _ := a.size()
@@ -82,18 +105,14 @@ func (a *App) extractBoardMouseSelection() string {
 	if a.MouseAnchor.TaskID != a.MouseCursor.TaskID {
 		return ""
 	}
-	var task *Task
 	for i := range a.Model.Tasks {
 		if a.Model.Tasks[i].TaskID == a.MouseAnchor.TaskID {
-			task = &a.Model.Tasks[i]
-			break
+			task := a.Model.Tasks[i]
+			lines := a.boardCardLines(task, a.MouseAnchor.ContentWidth)
+			return extractMouseCharSelection(lines, [2]int{a.MouseAnchor.Line, a.MouseAnchor.Col}, [2]int{a.MouseCursor.Line, a.MouseCursor.Col})
 		}
 	}
-	if task == nil {
-		return ""
-	}
-	lines := a.boardCardLines(*task, a.MouseAnchor.ContentWidth)
-	return extractMouseCharSelection(lines, [2]int{a.MouseAnchor.Line, a.MouseAnchor.Col}, [2]int{a.MouseCursor.Line, a.MouseCursor.Col})
+	return ""
 }
 
 func (a *App) extractDetailMouseSelection() string {
@@ -211,6 +230,14 @@ func (a *App) handleBoardClick(x, y, bstate int) {
 		a.Model.MoveColumn(hit.Delta)
 	case "column":
 		a.Model.FocusState(hit.State)
+	case "requirement":
+		if a.Model.CurrentState() != RequirementColumn {
+			a.Model.FocusState(RequirementColumn)
+		}
+		a.Model.SelectRequirementIndex(hit.Index)
+		if mouseLeftDoubleClicked(bstate) {
+			a.openDetail()
+		}
 	case "task":
 		a.Model.SelectTaskIndex(hit.State, hit.Index)
 		if mouseLeftDoubleClicked(bstate) {
@@ -307,6 +334,21 @@ func (a *App) hitBoard(x, y int) *boardHit {
 		}
 		if y < bodyTop || y >= bodyTop+bodyHeight || bodyHeight <= 0 {
 			return &boardHit{Kind: "column", State: col.State}
+		}
+		if col.State == RequirementColumn {
+			cards, scroll, capacity := columnRequirementWindow(a.Model, bodyHeight)
+			if len(cards) == 0 {
+				return &boardHit{Kind: "column", State: col.State}
+			}
+			row := (y - bodyTop) / cardHeight
+			if row < 0 || row >= capacity {
+				return &boardHit{Kind: "column", State: col.State}
+			}
+			idx := scroll + row
+			if idx >= len(cards) {
+				return &boardHit{Kind: "column", State: col.State}
+			}
+			return &boardHit{Kind: "requirement", State: col.State, Index: idx}
 		}
 		tasks, scroll, capacity := columnTaskWindow(a.Model, col.State, bodyHeight)
 		if len(tasks) == 0 {
