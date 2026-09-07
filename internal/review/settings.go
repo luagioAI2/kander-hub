@@ -155,6 +155,12 @@ func agentSettingsFor(agent, role string) (agentSettings, error) {
 			inspection: "Prefer read-only inspection. Do not modify the target worktree; the review gate fails if HEAD moves or the worktree is dirty.",
 			helpers:    true,
 		},
+		"dsh": {
+			name: "DSH", prefix: "DSH", executable: "dsh", defaultModel: "deepseek-v4-flash",
+			reviewHome: getenvDefault("DSH_HOME", filepath.Join(home, ".dsh")),
+			homeError:  "DSH_HOME", output: "output.txt",
+			inspection: "Use only read-only inspection. Do not modify the target worktree; the review gate fails if HEAD moves or the worktree is dirty.",
+		},
 	}
 	definition, ok := definitions[agent]
 	if !ok {

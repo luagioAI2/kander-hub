@@ -105,6 +105,13 @@ func reviewerArguments(ctx reviewContext, runtime, outputFile, promptFile string
 			"--prompt-file", promptFile,
 		)
 		cwd = ctx.root
+	case "dsh":
+		// DSH headless profile answers one task, prints the result, and exits;
+		// the prompt arrives on stdin and the review text on stdout.
+		environment["DSH_HOME"] = home
+		arguments = append([]string{"--profile", "headless"}, model...)
+		arguments = append(arguments, "--effort", settings.effort)
+		cwd = ctx.root
 	default:
 		return process.ProcessInvocation{}, "", newGate(2,
 			"review.unsupported_reviewer_agent", ctx.agent,
@@ -153,12 +160,16 @@ func printErrorTail(runtime, path string) {
 }
 
 func parseReviewOutput(ctx reviewContext, runtime, outputFile, stdoutFile string) error {
-	if ctx.agent == "codex" {
+	if ctx.agent == "codex" || ctx.agent == "dsh" {
+		// Both write plain review text to the output file.
 		data, err := fs.ReadRegularFile(runtime, outputFile)
 		if err != nil || len(data) == 0 || ctx.archive != nil && !utf8.Valid(data) {
 			printFile(runtime, stdoutFile, os.Stdout)
 			if ctx.archive != nil {
 				printFile(runtime, outputFile, os.Stdout)
+			}
+			if ctx.agent == "dsh" {
+				return newGate(1, "review.dsh_review_did_not_complete_with_review_text")
 			}
 			return newGate(1, "review.codex_review_did_not_complete_with_review_text")
 		}

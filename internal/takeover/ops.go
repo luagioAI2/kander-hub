@@ -35,9 +35,10 @@ var agentExitCommands = map[string]string{
 	"codex":  "/exit",
 	"grok":   "/quit",
 	"cursor": "/quit",
+	"dsh":    "/exit",
 }
 
-// AgentExitCommand returns /exit for Claude/Codex or /quit for Grok/Cursor.
+// AgentExitCommand returns /exit for Claude/Codex/DSH or /quit for Grok/Cursor.
 func AgentExitCommand(agent string) (string, error) {
 	cmd, ok := agentExitCommands[agent]
 	if !ok {

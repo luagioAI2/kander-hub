@@ -107,6 +107,15 @@ func commandStart(root, agentOverride, launcherOverride, taskID string) error {
 	if err != nil {
 		return err
 	}
+	// DSH resumes only pre-existing sessions: pre-create the stable per-task
+	// session before anything else is written, then point the card at it.
+	if agentName == "dsh" {
+		reference, preErr := dshPrecreateSession(entry.TaskID, root)
+		if preErr != nil {
+			return preErr
+		}
+		session = AgentSession{Agent: agentName, Reference: reference}
+	}
 	previous := map[string]struct{}{}
 	if agentName == "codex" && (plan.Launcher == "tmux" || plan.Launcher == "tmux-session") {
 		if sessions, err := codexSessionsForTask(entry.TaskID); err == nil {
@@ -147,7 +156,14 @@ func commandStart(root, agentOverride, launcherOverride, taskID string) error {
 	if err != nil {
 		return err
 	}
-	inv, err := launchInvocation(plan, *program, append(args, prompt))
+	// The dsh tui profile takes no positional prompt; the task file path is
+	// printed after launch and (under tmux) injected once the TUI is ready.
+	if agentName == "dsh" {
+		prompt = ""
+	} else {
+		args = append(args, prompt)
+	}
+	inv, err := launchInvocation(plan, *program, args)
 	if err != nil {
 		return err
 	}
@@ -312,7 +328,12 @@ func commandResume(root string, agent *string, launcherOverride, taskID, message
 	if err != nil {
 		return err
 	}
-	inv, err := launchInvocation(plan, *program, append(args, prompt))
+	if session.Agent == "dsh" {
+		prompt = ""
+	} else {
+		args = append(args, prompt)
+	}
+	inv, err := launchInvocation(plan, *program, args)
 	if err != nil {
 		return err
 	}

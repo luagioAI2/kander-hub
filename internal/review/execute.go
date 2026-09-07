@@ -180,7 +180,7 @@ func executeInRuntime(ctx reviewContext, runtime string, abort <-chan os.Signal)
 	defer errorStream.Close()
 
 	reviewerStdout := stdoutStream
-	if ctx.agent != "codex" {
+	if ctx.agent != "codex" && ctx.agent != "dsh" {
 		out, openErr := fs.OpenWritableRegularFile(outputRoot, outputFile)
 		if openErr != nil {
 			fail(openErr)

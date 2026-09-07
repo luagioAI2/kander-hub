@@ -81,6 +81,10 @@ func newAgentSession(agent string, program *process.AgentProgram) (AgentSession,
 	switch agent {
 	case "claude", "grok":
 		return AgentSession{Agent: agent, Reference: newUUID()}, nil
+	case "dsh":
+		// DSH TUI resumes only existing sessions; the stable per-task session
+		// id is pre-created before launch, so start with an empty reference.
+		return AgentSession{Agent: agent}, nil
 	case "cursor":
 		id, err := cursorCreateChat(program)
 		if err != nil {
@@ -137,6 +141,13 @@ func resolvedTaskSession(taskID, text string) (AgentSession, error) {
 			return AgentSession{}, err
 		}
 		return AgentSession{Agent: "codex", Reference: id}, nil
+	}
+	if session.Agent == "dsh" && session.Reference == "" {
+		id, err := findDshSession(taskID, taskLaunchRoot())
+		if err != nil {
+			return AgentSession{}, err
+		}
+		return AgentSession{Agent: "dsh", Reference: id}, nil
 	}
 	if session.Reference == "" {
 		return AgentSession{}, launchError(
@@ -365,6 +376,14 @@ func agentArguments(agent string, model map[string]string, kind string, session 
 			flag = "--resume"
 		}
 		return append(modelArgs, "--effort", effort, "--permission-mode", "bypassPermissions", flag, session.Reference), nil
+	case "dsh":
+		// Boot the interactive tui profile; the model and reasoning effort are
+		// managed by the DSH profile config, so they are not forwarded.
+		args := []string{"--profile", "tui"}
+		if resume {
+			return append(args, "--resume", session.Reference), nil
+		}
+		return args, nil
 	default:
 		return nil, launchError("launch.unsupported_agent", agent)
 	}

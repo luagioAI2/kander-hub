@@ -28,9 +28,9 @@ const (
 )
 
 var (
-	ExecutionAgents  = []string{"codex", "claude", "grok", "cursor"}
+	ExecutionAgents  = []string{"codex", "claude", "grok", "cursor", "dsh"}
 	TaskScales       = []string{"large", "small"}
-	ReviewAgents     = []string{"codex", "claude", "grok", "cursor"}
+	ReviewAgents     = []string{"codex", "claude", "grok", "cursor", "dsh"}
 	ReviewRoles      = []string{"PM", "CSA", "Hacker", "QA"}
 	ReviewStageModes = []string{"auto", "skip", "required"}
 	Launchers        = []string{"auto", "tmux", "tmux-session", "herdr", "foreground", "console"}
@@ -56,6 +56,7 @@ var AgentExecutables = map[string]string{
 	"claude": "claude",
 	"grok":   "grok",
 	"cursor": "cursor-agent",
+	"dsh":    "dsh",
 }
 
 var modelIDFields = map[string]struct{}{
@@ -93,6 +94,12 @@ var kanbanModelDefaults = map[string]map[string]string{
 		"large_model": "cursor-grok-4.6-xhigh",
 		"small_model": "cursor-grok-4.6-high",
 	},
+	"dsh": {
+		"large_model":  "deepseek-v4-pro",
+		"small_model":  "deepseek-v4-flash",
+		"large_effort": "max",
+		"small_effort": "high",
+	},
 }
 
 var reviewModelDefaults = map[string]map[string]string{
@@ -100,6 +107,7 @@ var reviewModelDefaults = map[string]map[string]string{
 	"claude": {"model": "opus", "effort": "high"},
 	"grok":   {"model": "", "effort": "high"},
 	"cursor": {"model": "cursor-grok-4.6-xhigh"},
+	"dsh":    {"model": "deepseek-v4-flash", "effort": "max"},
 }
 
 var languageLabels = map[string]string{
