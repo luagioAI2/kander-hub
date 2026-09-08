@@ -309,6 +309,42 @@ func (s *Server) completeRequirement(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]string{"path": path})
 }
 
+// decomposeRequest identifies the requirement the user wants the agent to
+// decompose. Message is the additional guidance passed to the agent; if empty
+// the user must supply a file path. The agent prompt is built by the launch
+// package; web only dispatches into the registered hook.
+type decomposeRequest struct {
+	ID      string `json:"id"`
+	Message string `json:"message"`
+}
+
+// decomposeRequirement handles POST /api/requirements/decompose: spawns a
+// long-running Agent session that decomposes the requirement into N task
+// cards. The endpoint returns immediately after the agent is launched; the
+// user follows progress through their existing launcher (tmux pane, herdr
+// tab, console window).
+func (s *Server) decomposeRequirement(w http.ResponseWriter, r *http.Request) {
+	if board.RunRequirementDecompose == nil {
+		writeError(w, http.StatusServiceUnavailable, errors.New("requirement decompose backend not available"))
+		return
+	}
+	var body decomposeRequest
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, err)
+		return
+	}
+	if body.ID == "" || body.Message == "" {
+		writeError(w, http.StatusBadRequest, errors.New("id and message are required"))
+		return
+	}
+	args := []string{"--message", body.Message, body.ID}
+	if rc := board.RunRequirementDecompose(args); rc != 0 {
+		writeError(w, http.StatusBadRequest, errors.New("decompose failed; check the launcher pane for details"))
+		return
+	}
+	writeJSON(w, http.StatusAccepted, map[string]string{"status": "launched", "id": body.ID})
+}
+
 // getBoard handles GET /api/board: the full kanban snapshot grouped by state.
 func (s *Server) getBoard(w http.ResponseWriter, r *http.Request) {
 	scan, err := board.Scan(s.Root)

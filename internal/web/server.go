@@ -28,6 +28,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/requirements/import", s.importRequirements)
 	mux.HandleFunc("POST /api/requirements/convert", s.convertRequirement)
 	mux.HandleFunc("POST /api/requirements/complete", s.completeRequirement)
+	mux.HandleFunc("POST /api/requirements/decompose", s.decomposeRequirement)
 	mux.HandleFunc("GET /api/board", s.getBoard)
 	mux.HandleFunc("POST /api/tasks", s.createTask)
 	mux.HandleFunc("GET /api/tasks/", s.getTask)

@@ -154,6 +154,16 @@ pre.doc { white-space: pre-wrap; font-family: Consolas, monospace; font-size: 12
   <div class="row"><button class="ghost" onclick="dlgConvert.close()">取消</button><button class="primary" onclick="submitConvert()">创建并关联</button></div>
 </dialog>
 
+<dialog id="dlgDecompose" class="wide">
+  <h2>AI 拆解</h2>
+  <p class="hint" id="dcMeta"></p>
+  <p class="hint">启动一个 kander Agent 会话读取需求正文，与你在 tmux/herdr pane 中沟通边界，再由 Agent 调用 <code>kander new</code> 建卡、<code>kander req convert</code> 关联。Agent 复用你在 <code>config.json</code> 里配置的 <code>models.kanban</code>。</p>
+  <label>给 Agent 的补充说明 *</label>
+  <textarea id="dcMessage" placeholder="例：重点放在 API 兼容性；忽略 UI 改动；如果拆出超过 4 张卡请先和我确认。"></textarea>
+  <div class="error" id="dcError"></div>
+  <div class="row"><button class="ghost" onclick="dlgDecompose.close()">取消</button><button class="primary" onclick="submitDecompose()">启动 Agent</button></div>
+</dialog>
+
 <dialog id="dlgDetail">
   <h2 id="dtTitle"></h2>
   <div id="detailBody"></div>
@@ -203,6 +213,7 @@ async function loadReqs() {
       <td class="progress">${r.total ? `${r.done}/${r.total}` : '—'}</td>
       <td>
         <button class="ghost mini" onclick="event.stopPropagation();openConvert('${esc(r.id)}')">转任务</button>
+        <button class="ghost mini" onclick="event.stopPropagation();openDecompose('${esc(r.id)}')">AI 拆解</button>
         ${r.status !== 'completed' ? `<button class="ghost mini" onclick="event.stopPropagation();completeReq('${esc(r.id)}')">完成</button>` : ''}
       </td>
     </tr>`).join('') || '<tr><td colspan="5" class="meta empty">暂无需求，点击「新建需求」创建</td></tr>';
@@ -269,6 +280,25 @@ async function openConvert(id) {
   $('cvSlug').value = id.replace(/-req$/, '').replace(/^\d{8}-/, '') || 'task';
   $('cvError').textContent = '';
   dlgConvert.showModal();
+}
+
+let decomposeTarget = null;
+function openDecompose(id) {
+  decomposeTarget = id;
+  $('dcMeta').textContent = id;
+  $('dcMessage').value = '';
+  $('dcError').textContent = '';
+  dlgDecompose.showModal();
+}
+async function submitDecompose() {
+  const message = $('dcMessage').value.trim();
+  if (!message) { $('dcError').textContent = '请给 Agent 写一段补充说明'; return; }
+  try {
+    await api('/api/requirements/decompose', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: decomposeTarget, message }) });
+    dlgDecompose.close();
+    toast('Agent 已启动，请到启动器 pane 中沟通');
+  } catch (e) { $('dcError').textContent = e.message; }
 }
 async function submitConvert() {
   try {

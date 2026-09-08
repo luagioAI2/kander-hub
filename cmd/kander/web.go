@@ -1,4 +1,8 @@
 package main
 
 // The web package registers the `kander req serve` backend on init.
-import _ "github.com/dualface/kander/internal/web"
+// The launch package registers the `kander req decompose` backend on init.
+import (
+	_ "github.com/dualface/kander/internal/launch"
+	_ "github.com/dualface/kander/internal/web"
+)

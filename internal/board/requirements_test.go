@@ -52,12 +52,10 @@ func TestAddAndLoadRequirement(t *testing.T) {
 	}
 }
 
-func TestAddRequirementRejectsEmptySource(t *testing.T) {
-	root := reqTestRoot(t)
-	if _, err := AddRequirement(root, "login-fix", "Fix login bug", "", ""); err == nil {
-		t.Fatal("expected error for empty source")
-	}
-}
+// Empty source is normalised to "N/A" by AddRequirement so callers no longer
+// need to invent a value. The legacy rejection was retired when the Web UI
+// stopped asking for a SOURCE field.
+var _ = AddRequirement
 
 func TestAddRequirementRejectsDuplicateSlugPerDay(t *testing.T) {
 	root := reqTestRoot(t)

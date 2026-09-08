@@ -812,7 +812,7 @@
   "board.transaction_decision_required": "明示的な決定の参照と終了理由、または契約変更の決定が必要です。",
   "board.transaction_managed": "update では管理対象を変更できません: {{.V0}}",
   "board.messages.update": "使い方: kander update <id> --document <relative-path> --file <UTF8-input> --expect-revision <revision> [--contract-decision-file <file>]",
-  "board.messages.req": "使い方: kander req <new|list|show|convert|link|unlink|remove|complete|serve> [引数]",
+  "board.messages.req": "使い方: kander req <new|list|show|convert|link|unlink|remove|complete|decompose|serve> [引数]",
   "board.messages.req-new": "使い方: kander req new --source <ソースまたはパス> [--summary-file <ファイル>] <slug> <タイトル...>",
   "board.messages.req-list": "使い方: kander req list [--status <状態>] [--json]",
   "board.messages.req-show": "使い方: kander req show [--json] <要件ID>",
@@ -857,5 +857,9 @@
   "review.archive_tree_incomplete": "Reviewer プロセスの回収が未完了です。結果を拒否しました",
   "review.gate_usage": "証拠コマンド:\nkander review <plan|extend-plan|assign|map-legacy|advance|close> <CWD> <JSON>\nkander review disposition <CWD> <JSON> <expected-revision>\nkander review <aggregate|progress> <CWD> <batch-id|task-id>\n計画はロール要件を明示し、集約は原著者の記録を保持し、終了処理は最終 Git 証拠を検証します。",
   "board.messages.req-serve": "使い方: kander req serve [--host <アドレス>] [--port <ポート>]",
-  "board.web_serving": "kander Web UI: http://{{.V0}}"
+  "board.web_serving": "kander Web UI: http://{{.V0}}",
+  "launch.usage_kander_req_decompose_agent_launcher_message_text_message": "使い方: kander req decompose [--agent <agent>] [--launcher <launcher>] (--message <テキスト> | --message-file <ファイル>) <要件ID>",
+  "launch.prompt.decompose_head": "kander 要件 {{.V0}} を分解してください。",
+  "launch.prompt.decompose": "{{.V0}}\n\n{{.V1}}\n\n要件本文は kanban/requirements/<id>.md を読んでください（または {{.V2}} show {{.V3}}）。必要ならユーザーに確認質問を行ってください。一度の確認は誤ったタスクカードより安上がりです。合意が取れたら、{{.V2}} new <slug> <タイトル> を 1 回以上実行して backlog にタスクカードを作成し、{{.V2}} req convert {{.V3}} <task-id>... でリンクしてください。ユーザーからの追記指示は以下：\n\n{{.V4}}\n\n{{.V5}} と有効なルールモジュールに従ってください。タスクを working 以降へ進めないでください。それ以降の遷移はユーザーが {{.V2}} start <task-id> を実行した時点で発生します。",
+  "board.messages.req-decompose": "使い方: kander req decompose (--message <テキスト> | --message-file <ファイル>) [--agent <agent>] [--launcher <launcher>] <要件ID>"
 }

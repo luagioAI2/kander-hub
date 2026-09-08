@@ -812,7 +812,7 @@
   "board.transaction_decision_required": "必须提供明确决定引用及终止原因，或契约修订决定。",
   "board.transaction_managed": "update 不得修改受管字段或文档：{{.V0}}",
   "board.messages.update": "用法: kander update <id> --document <relative-path> --file <UTF8-input> --expect-revision <revision> [--contract-decision-file <file>]",
-  "board.messages.req": "用法: kander req <new|list|show|convert|link|unlink|remove|complete|serve> [参数]",
+  "board.messages.req": "用法: kander req <new|list|show|convert|link|unlink|remove|complete|decompose|serve> [参数]",
   "board.messages.req-new": "用法: kander req new --source <来源或路径> [--summary-file <文件>] <slug> <标题...>",
   "board.messages.req-list": "用法: kander req list [--status <状态>] [--json]",
   "board.messages.req-show": "用法: kander req show [--json] <需求ID>",
@@ -857,5 +857,9 @@
   "review.archive_tree_incomplete": "Reviewer 进程回收未完成；结果已拒绝",
   "review.gate_usage": "证据命令:\nkander review <plan|extend-plan|assign|map-legacy|advance|close> <CWD> <JSON>\nkander review disposition <CWD> <JSON> <expected-revision>\nkander review <aggregate|progress> <CWD> <batch-id|task-id>\n计划显式记录角色要求；汇总保留原作者记录；关闭批次核验最终 Git 证据。",
   "board.messages.req-serve": "用法: kander req serve [--host <地址>] [--port <端口>]",
-  "board.web_serving": "kander Web 界面: http://{{.V0}}"
+  "board.web_serving": "kander Web 界面: http://{{.V0}}",
+  "launch.usage_kander_req_decompose_agent_launcher_message_text_message": "用法: kander req decompose [--agent <agent>] [--launcher <launcher>] (--message <文本> | --message-file <文件>) <需求ID>",
+  "launch.prompt.decompose_head": "拆解 kander 需求 {{.V0}}。",
+  "launch.prompt.decompose": "{{.V0}}\n\n{{.V1}}\n\n请读取 kanban/requirements/<id>.md（也可运行 {{.V2}} show {{.V3}}）拿到需求正文。需要时与用户先确认边界——一次澄清胜过一张错卡。协商一致后，运行一次或多次 {{.V2}} new <slug> <标题> 在 backlog 下创建任务卡，然后调用 {{.V2}} req convert {{.V3}} <task-id>... 关联它们。用户补充说明如下：\n\n{{.V4}}\n\n遵守 {{.V5}} 与已启用的规则模块。不要把任务推进到 working 或之后——那一步由用户后续运行 {{.V2}} start <task-id> 触发。",
+  "board.messages.req-decompose": "用法: kander req decompose (--message <文本> | --message-file <文件>) [--agent <agent>] [--launcher <launcher>] <需求ID>"
 }

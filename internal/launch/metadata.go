@@ -111,6 +111,53 @@ func renderSessionMetadata(text, session string) (string, error) {
 	return replaceUniqueField(text, sessionField, session)
 }
 
+// RenderDecomposeMetadata updates (or appends) the SESSION and LAST_DECOMPOSE
+// fields on a requirement card after the decompose Agent has been launched.
+// It mirrors renderStartMetadata but operates on requirement cards, where the
+// field names are board.FieldReqSession and board.FieldReqLastDecompose.
+func RenderDecomposeMetadata(text, session string) (string, error) {
+	sessionRe := board.FieldLineRe(board.FieldReqSession)
+	sessionLines := sessionRe.FindAllString(text, -1)
+	if len(sessionLines) > 1 {
+		return "", launchError(
+			"launch.task_document_must_contain_exactly_one_metadata_field", board.FieldReqSession,
+		)
+	}
+	if len(sessionLines) > 0 {
+		text = replaceLiteral(sessionRe, text, board.RenderField(board.FieldReqSession, session))
+	} else {
+		// Anchor the new field at the bottom of the existing front-matter
+		// block. We try LAST_DECOMPOSE first; fall back to TASK_GROUPS if
+		// neither field is present yet.
+		var err error
+		if pattern := board.FieldLineRe(board.FieldReqLastDecompose); len(pattern.FindAllString(text, -1)) == 1 {
+			text, err = insertAfterField(text, board.FieldReqLastDecompose, board.FieldReqSession, session)
+		} else {
+			text, err = insertAfterField(text, board.FieldReqGroups, board.FieldReqSession, session)
+		}
+		if err != nil {
+			return "", err
+		}
+	}
+	lastRe := board.FieldLineRe(board.FieldReqLastDecompose)
+	lastLines := lastRe.FindAllString(text, -1)
+	if len(lastLines) > 1 {
+		return "", launchError(
+			"launch.task_document_must_contain_exactly_one_metadata_field", board.FieldReqLastDecompose,
+		)
+	}
+	if len(lastLines) > 0 {
+		text = replaceLiteral(lastRe, text, board.RenderField(board.FieldReqLastDecompose, nowStamp()))
+	} else {
+		var err error
+		text, err = insertAfterField(text, board.FieldReqSession, board.FieldReqLastDecompose, nowStamp())
+		if err != nil {
+			return "", err
+		}
+	}
+	return text, nil
+}
+
 func startMetadata(text, agent string, session AgentSession, window string) (string, error) {
 	return renderStartMetadata(text, agent, session.Render(), window)
 }
@@ -173,5 +220,22 @@ func recordWindowLocation(root string, plan LaunchPlan, entry board.Entry) func(
 			return err
 		}
 		return writeDocumentFn(root, entry, updated)
+	}
+}
+
+// recordRequirementWindowLocation is the requirement-card counterpart of
+// recordWindowLocation. It persists the launch outcome into the requirement's
+// WINDOW field via the requirement document helper.
+func recordRequirementWindowLocation(root string, plan LaunchPlan, reqID string) func(LaunchOutcome) error {
+	return func(outcome LaunchOutcome) error {
+		current, err := readRequirementFn(root, reqID)
+		if err != nil {
+			return err
+		}
+		updated, err := windowMetadata(current, locationOf(plan, outcome))
+		if err != nil {
+			return err
+		}
+		return writeRequirementFn(root, reqID, updated)
 	}
 }

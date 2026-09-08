@@ -119,4 +119,7 @@ var (
 	locateFn            = board.Locate
 	readDocumentFn      = board.ReadDocument
 	moveEntryFn         = board.MoveEntry
+	readRequirementFn   = board.ReadRequirementDocument
+	writeRequirementFn  = board.WriteRequirementDocument
+	acquireReqLockFn    = board.AcquireRequirementLock
 )

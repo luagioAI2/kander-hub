@@ -812,7 +812,7 @@
   "board.transaction_decision_required": "An explicit decision reference and termination reason or contract decision are required.",
   "board.transaction_managed": "Managed field or document cannot be edited through update: {{.V0}}",
   "board.messages.update": "usage: kander update <id> --document <relative-path> --file <UTF8-input> --expect-revision <revision> [--contract-decision-file <file>]",
-  "board.messages.req": "usage: kander req <new|list|show|convert|link|unlink|remove|complete|serve> [args]",
+  "board.messages.req": "usage: kander req <new|list|show|convert|link|unlink|remove|complete|decompose|serve> [args]",
   "board.messages.req-new": "usage: kander req new --source <source-or-path> [--summary-file <file>] <slug> <title...>",
   "board.messages.req-list": "usage: kander req list [--status <status>] [--json]",
   "board.messages.req-show": "usage: kander req show [--json] <requirement-id>",
@@ -857,5 +857,9 @@
   "review.archive_tree_incomplete": "Reviewer process collection is incomplete; result rejected",
   "review.gate_usage": "Evidence commands:\nkander review <plan|extend-plan|assign|map-legacy|advance|close> <CWD> <JSON>\nkander review disposition <CWD> <JSON> <expected-revision>\nkander review <aggregate|progress> <CWD> <batch-id|task-id>\nPlans record explicit role requirements; aggregate preserves author records; close validates final Git evidence.",
   "board.messages.req-serve": "usage: kander req serve [--host <addr>] [--port <n>]",
-  "board.web_serving": "kander web UI: http://{{.V0}}"
+  "board.web_serving": "kander web UI: http://{{.V0}}",
+  "launch.usage_kander_req_decompose_agent_launcher_message_text_message": "usage: kander req decompose [--agent <name>] [--launcher <name>] (--message <text> | --message-file <path>) <req-id>",
+  "launch.prompt.decompose_head": "Decompose Kanban requirement {{.V0}}.",
+  "launch.prompt.decompose": "{{.V0}}\n\n{{.V1}}\n\nRead kanban/requirements/<id>.md ({{.V2}} show {{.V3}}) to load the requirement. Discuss with the user as needed (a clarifying question is cheaper than a wrong task). When the decomposition is agreed, run one or more {{.V2}} new <slug> <title> commands to create task cards under backlog, then call {{.V2}} req convert {{.V3}} <task-id>... to link them. Use the message below as additional guidance from the user:\n\n{{.V4}}\n\nFollow {{.V5}} and the enabled rules modules. Do not move any task into working or beyond; that happens when the user later runs {{.V2}} start <task-id>.",
+  "board.messages.req-decompose": "usage: kander req decompose (--message <text> | --message-file <path>) [--agent <name>] [--launcher <name>] <req-id>"
 }

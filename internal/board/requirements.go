@@ -36,6 +36,15 @@ const (
 	FieldReqTasks     = "TASKS"
 	FieldReqGroups    = "TASK_GROUPS"
 
+	// FieldReqSession mirrors board.FieldSession for requirement cards so the
+	// decompose agent's identity can be persisted next to the requirement and
+	// later resumed by kander req resume.
+	FieldReqSession = "SESSION"
+	// FieldReqLastDecompose records the last decompose run timestamp on a
+	// requirement card. It is updated by the launch pipeline after each
+	// decompose command so the user can see when the agent last worked on it.
+	FieldReqLastDecompose = "LAST_DECOMPOSE"
+
 	ReqSectionSummary = "SUMMARY"
 	ReqSectionNotes   = "NOTES"
 )
@@ -64,6 +73,12 @@ type Requirement struct {
 	// Summary and Notes hold the two free-text sections of the card.
 	Summary string
 	Notes   string
+	// Session is the agent identity that last worked on this requirement; it
+	// is set by the launch pipeline when kander req decompose runs.
+	Session string
+	// LastDecompose is the timestamp of the last decompose launch; it is set
+	// by the launch pipeline after a successful decompose run.
+	LastDecompose string
 }
 
 func requirementsRoot(root string) string {
@@ -103,15 +118,17 @@ func parseRequirement(id, path, text string) Requirement {
 		}
 	}
 	req := Requirement{
-		ID:      id,
-		Path:    path,
-		Title:   title,
-		Source:  MetadataFrom(text, FieldReqSource),
-		Status:  MetadataFrom(text, FieldReqStatus),
-		Created: MetadataFrom(text, FieldReqCreatedAt),
-		Docs:    splitIDList(MetadataFrom(text, FieldReqDocs)),
-		Tasks:   splitIDList(MetadataFrom(text, FieldReqTasks)),
-		Groups:  splitIDList(MetadataFrom(text, FieldReqGroups)),
+		ID:            id,
+		Path:          path,
+		Title:         title,
+		Source:        MetadataFrom(text, FieldReqSource),
+		Status:        MetadataFrom(text, FieldReqStatus),
+		Created:       MetadataFrom(text, FieldReqCreatedAt),
+		Docs:          splitIDList(MetadataFrom(text, FieldReqDocs)),
+		Tasks:         splitIDList(MetadataFrom(text, FieldReqTasks)),
+		Groups:        splitIDList(MetadataFrom(text, FieldReqGroups)),
+		Session:       MetadataFrom(text, FieldReqSession),
+		LastDecompose: MetadataFrom(text, FieldReqLastDecompose),
 	}
 	if body, ok := SectionBody(text, ReqSectionSummary); ok {
 		req.Summary = body
@@ -205,6 +222,41 @@ func requirementPath(root, id string) string {
 	return filepath.Join(root, RequirementsDir, id+".md")
 }
 
+// ReadRequirementDocument reads a requirement card as UTF-8 text. It is the
+// requirement counterpart of ReadDocument and is exported because the launch
+// pipeline needs it to update metadata before the Agent reads the card.
+func ReadRequirementDocument(root, id string) (string, error) {
+	id, err := validateRequirementID(id)
+	if err != nil {
+		return "", err
+	}
+	path := requirementPath(root, id)
+	data, err := fs.ReadRegularFile(root, path)
+	if err != nil {
+		return "", wrapFS(err, "board.req_requirement_not_found", id)
+	}
+	return string(data), nil
+}
+
+// WriteRequirementDocument overwrites a requirement card atomically. Mirrors
+// WriteDocument so the launch pipeline can persist updated SESSION and
+// LAST_DECOMPOSE fields.
+func WriteRequirementDocument(root, id, text string) error {
+	id, err := validateRequirementID(id)
+	if err != nil {
+		return err
+	}
+	path := requirementPath(root, id)
+	return fs.WriteTextAtomic(root, path, text, true)
+}
+
+// AcquireRequirementLock is the exported form of requirementLock for the
+// launch pipeline, which keeps its own copy of the root but should still
+// serialise concurrent writes against the requirement pool.
+func AcquireRequirementLock(root string) (func(), error) {
+	return requirementLock(root)
+}
+
 func renderRequirementCard(req Requirement) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n\n", req.Title)
@@ -214,6 +266,12 @@ func renderRequirementCard(req Requirement) string {
 	fmt.Fprintf(&b, "- %s: %s\n", FieldReqDocs, strings.Join(req.Docs, ", "))
 	fmt.Fprintf(&b, "- %s: %s\n", FieldReqTasks, strings.Join(req.Tasks, ", "))
 	fmt.Fprintf(&b, "- %s: %s\n", FieldReqGroups, strings.Join(req.Groups, ", "))
+	if req.Session != "" {
+		fmt.Fprintf(&b, "- %s: %s\n", FieldReqSession, req.Session)
+	}
+	if req.LastDecompose != "" {
+		fmt.Fprintf(&b, "- %s: %s\n", FieldReqLastDecompose, req.LastDecompose)
+	}
 	b.WriteString("\n## " + ReqSectionSummary + "\n\n")
 	if req.Summary == "" {
 		b.WriteString(Placeholder + "\n")

@@ -112,6 +112,11 @@ func Fail(err error) int {
 	return fail(err)
 }
 
+// TakeFlag is the exported form of takeFlag for the same helper packages.
+func TakeFlag(args []string, name string) (rest []string, found bool) {
+	return takeFlag(args, name)
+}
+
 // Text renders an i18n message; the exported form of t for helper packages.
 func Text(id string, args ...any) string {
 	return t(id, args...)

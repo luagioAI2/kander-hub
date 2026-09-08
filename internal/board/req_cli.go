@@ -23,7 +23,7 @@ func reqUsage(w io.Writer, action string) {
 		"unlink":   "board.messages.req-unlink",
 		"remove":   "board.messages.req-remove",
 		"complete": "board.messages.req-complete",
-		"tui":      "board.messages.req-tui",
+		"decompose": "board.messages.req-decompose",
 		"serve":    "board.messages.req-serve",
 	}
 	if id, ok := messages[action]; ok {
@@ -93,6 +93,12 @@ func findRequirement(reqs []Requirement, id string) (Requirement, error) {
 // web package (web itself imports board).
 var RunWebServe func(args []string) int
 
+// RunRequirementDecompose is set by internal/launch on registration; it
+// implements the `kander req decompose` action. The launch package owns the
+// agent-launch pipeline so the decompose action lives there; board only
+// dispatches into it to keep the package graph acyclic.
+var RunRequirementDecompose func(args []string) int
+
 // RequirementLinkedRef describes one linked task of a requirement; Missing
 // means the linked ID no longer exists on the board.
 type RequirementLinkedRef struct {
@@ -124,6 +130,12 @@ func RunRequirement(args []string) int {
 		return runReqRemove(rest)
 	case "complete":
 		return runReqComplete(rest)
+	case "decompose":
+		if RunRequirementDecompose == nil {
+			fmt.Fprintln(os.Stderr, t("board.req_unknown_action", action))
+			return 2
+		}
+		return RunRequirementDecompose(rest)
 	case "serve":
 		if RunWebServe == nil {
 			fmt.Fprintln(os.Stderr, t("board.req_unknown_action", action))
