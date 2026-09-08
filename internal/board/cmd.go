@@ -94,6 +94,35 @@ func requireRoot() (string, error) {
 	return BoardRoot()
 }
 
+// RequireBoardRoot is the exported form of requireRoot, used by helper
+// packages (internal/web) that implement a subcommand backend without being
+// importable from board itself.
+func RequireBoardRoot() (string, error) {
+	return BoardRoot()
+}
+
+// TakeValueFlag is the exported form of takeValueFlag for the same helper
+// packages as RequireBoardRoot.
+func TakeValueFlag(args []string, name string) (rest []string, value string, found bool, err error) {
+	return takeValueFlag(args, name)
+}
+
+// Fail is the exported form of fail for the same helper packages.
+func Fail(err error) int {
+	return fail(err)
+}
+
+// Text renders an i18n message; the exported form of t for helper packages.
+func Text(id string, args ...any) string {
+	return t(id, args...)
+}
+
+// ReqUsageFail is the exported form of reqUsageFail for the same helper
+// packages.
+func ReqUsageFail(action, id string, args ...any) int {
+	return reqUsageFail(action, id, args...)
+}
+
 // RunInit implements kander init.
 func RunInit(args []string) int {
 	args, maintenance := takeFlag(args, "--maintenance")

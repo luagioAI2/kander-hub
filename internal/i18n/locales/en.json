@@ -812,7 +812,7 @@
   "board.transaction_decision_required": "An explicit decision reference and termination reason or contract decision are required.",
   "board.transaction_managed": "Managed field or document cannot be edited through update: {{.V0}}",
   "board.messages.update": "usage: kander update <id> --document <relative-path> --file <UTF8-input> --expect-revision <revision> [--contract-decision-file <file>]",
-  "board.messages.req": "usage: kander req <new|list|show|convert|link|unlink|remove|complete|tui> [args]",
+  "board.messages.req": "usage: kander req <new|list|show|convert|link|unlink|remove|complete|serve> [args]",
   "board.messages.req-new": "usage: kander req new --source <source-or-path> [--summary-file <file>] <slug> <title...>",
   "board.messages.req-list": "usage: kander req list [--status <status>] [--json]",
   "board.messages.req-show": "usage: kander req show [--json] <requirement-id>",
@@ -856,13 +856,6 @@
   "review.archive_card_published": "Card {{.V0}} published run {{.V1}} (execution={{.V2}}; semantic result unassessed)",
   "review.archive_tree_incomplete": "Reviewer process collection is incomplete; result rejected",
   "review.gate_usage": "Evidence commands:\nkander review <plan|extend-plan|assign|map-legacy|advance|close> <CWD> <JSON>\nkander review disposition <CWD> <JSON> <expected-revision>\nkander review <aggregate|progress> <CWD> <batch-id|task-id>\nPlans record explicit role requirements; aggregate preserves author records; close validates final Git evidence.",
-  "board.messages.req-tui": "usage: kander req tui [--lang <cn|en|ja>]",
-  "reqtui.title": "Requirements",
-  "reqtui.updated": "updated {{.V0}}",
-  "reqtui.empty": "(no requirement cards)",
-  "reqtui.footer": "j/k move  Enter open  q quit",
-  "reqtui.use_kander_req_new": "use `kander req new --source <id> <slug> <title>` to create one",
-  "reqtui.detail_title": "{{.V0}}",
-  "reqtui.detail_no_links": "(no linked tasks)",
-  "reqtui.detail_footer": "j/k scroll  q/Esc back"
+  "board.messages.req-serve": "usage: kander req serve [--host <addr>] [--port <n>]",
+  "board.web_serving": "kander web UI: http://{{.V0}}"
 }

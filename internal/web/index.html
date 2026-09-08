@@ -1,0 +1,280 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>kander web</title>
+<style>
+:root {
+  --bg: #f5f6f8; --panel: #ffffff; --ink: #1c2733; --dim: #6b7684;
+  --accent: #2563eb; --ok: #16a34a; --warn: #d97706; --bad: #dc2626;
+  --edge: #dfe3e8;
+}
+* { box-sizing: border-box; }
+body { margin: 0; font: 14px/1.5 "Segoe UI", "Microsoft YaHei", sans-serif; background: var(--bg); color: var(--ink); }
+header { display: flex; align-items: center; gap: 16px; padding: 10px 20px; background: var(--panel); border-bottom: 1px solid var(--edge); position: sticky; top: 0; z-index: 5; }
+header h1 { font-size: 16px; margin: 0; }
+.tabs { display: flex; gap: 4px; }
+.tabs button { border: none; background: transparent; padding: 6px 14px; border-radius: 6px; cursor: pointer; font-size: 14px; color: var(--dim); }
+.tabs button.active { background: var(--accent); color: #fff; }
+.spacer { flex: 1; }
+main { padding: 16px 20px; max-width: 1400px; margin: 0 auto; }
+button.primary { background: var(--accent); color: #fff; border: none; padding: 7px 14px; border-radius: 6px; cursor: pointer; }
+button.ghost { background: transparent; border: 1px solid var(--edge); color: var(--ink); padding: 6px 12px; border-radius: 6px; cursor: pointer; }
+button.mini { font-size: 12px; padding: 3px 8px; }
+table { width: 100%; border-collapse: collapse; background: var(--panel); border-radius: 8px; overflow: hidden; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--edge); }
+th { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
+tr.clickable { cursor: pointer; }
+tr.clickable:hover { background: #f0f4ff; }
+.badge { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 10px; }
+.badge.draft { background: #fef3c7; color: #92400e; }
+.badge.decomposed { background: #dbeafe; color: #1e40af; }
+.badge.completed { background: #dcfce7; color: #166534; }
+.badge.archived { background: #e5e7eb; color: #4b5563; }
+.badge.backlog { background: #e0f2fe; color: #075985; }
+.badge.todo { background: #fef9c3; color: #854d0e; }
+.badge.working { background: #e9d5ff; color: #6b21a8; }
+.badge.review { background: #fce7f3; color: #9d174d; }
+.badge.done { background: #dcfce7; color: #166534; }
+.progress { font-variant-numeric: tabular-nums; color: var(--dim); }
+.board { display: flex; gap: 12px; align-items: flex-start; overflow-x: auto; padding-bottom: 12px; }
+.column { background: var(--panel); border-radius: 8px; min-width: 230px; flex: 1; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
+.column h3 { margin: 0; padding: 10px 12px; font-size: 13px; border-bottom: 1px solid var(--edge); display: flex; justify-content: space-between; }
+.column h3 .count { color: var(--dim); font-weight: normal; }
+.cards { padding: 8px; display: flex; flex-direction: column; gap: 8px; min-height: 60px; }
+.card { border: 1px solid var(--edge); border-radius: 6px; padding: 8px 10px; background: #fff; }
+.card .id { font-size: 11px; color: var(--dim); }
+.card .title { font-weight: 600; margin: 2px 0; }
+dialog { border: 1px solid var(--edge); border-radius: 10px; padding: 20px; width: 480px; max-width: 92vw; }
+dialog::backdrop { background: rgba(0,0,0,.35); }
+dialog h2 { margin: 0 0 12px; font-size: 16px; }
+label { display: block; font-size: 12px; color: var(--dim); margin: 10px 0 4px; }
+input[type=text], textarea, select { width: 100%; padding: 7px 9px; border: 1px solid var(--edge); border-radius: 6px; font: inherit; }
+textarea { min-height: 80px; resize: vertical; }
+.row { display: flex; gap: 10px; justify-content: flex-end; margin-top: 16px; }
+.meta { color: var(--dim); font-size: 12px; }
+.linked { margin-top: 14px; }
+.linked li { margin: 4px 0; list-style: none; }
+.linked .miss { color: var(--bad); }
+.toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 8px 18px; border-radius: 8px; opacity: 0; transition: opacity .25s; pointer-events: none; }
+.toast.show { opacity: .92; }
+.error { color: var(--bad); font-size: 12px; margin-top: 8px; white-space: pre-wrap; }
+#detailBody { max-height: 55vh; overflow: auto; }
+.import-box textarea { min-height: 160px; font-family: Consolas, monospace; font-size: 12px; }
+.hint { font-size: 12px; color: var(--dim); margin-top: 4px; }
+</style>
+</head>
+<body>
+<header>
+  <h1>kander</h1>
+  <nav class="tabs">
+    <button id="tabReq" class="active">需求池</button>
+    <button id="tabBoard">看板</button>
+  </nav>
+  <div class="spacer"></div>
+  <span class="meta" id="boardPath"></span>
+</header>
+<main>
+  <section id="viewReq">
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="primary" onclick="openNewReq()">新建需求</button>
+      <button class="ghost" onclick="openImport()">导入公共需求</button>
+      <button class="ghost" onclick="loadReqs()">刷新</button>
+    </div>
+    <table>
+      <thead><tr><th>ID</th><th>标题</th><th>状态</th><th>进度</th><th>来源</th><th></th></tr></thead>
+      <tbody id="reqRows"></tbody>
+    </table>
+  </section>
+
+  <section id="viewBoard" style="display:none">
+    <div style="display:flex;gap:8px;margin-bottom:12px">
+      <button class="primary" onclick="openNewTask()">新建任务</button>
+      <button class="ghost" onclick="loadBoard()">刷新</button>
+    </div>
+    <div class="board" id="board"></div>
+  </section>
+</main>
+
+<dialog id="dlgNewReq">
+  <h2>新建需求</h2>
+  <label>标题 *</label><input type="text" id="nrTitle">
+  <label>来源标识 *（如 pool://team-42）</label><input type="text" id="nrSource">
+  <label>Slug *（用于生成 ID，如 login-fix）</label><input type="text" id="nrSlug">
+  <label>摘要</label><textarea id="nrSummary"></textarea>
+  <div class="error" id="nrError"></div>
+  <div class="row"><button class="ghost" onclick="dlgNewReq.close()">取消</button><button class="primary" onclick="submitNewReq()">创建</button></div>
+</dialog>
+
+<dialog id="dlgImport" class="import-box">
+  <h2>导入公共需求</h2>
+  <p class="hint">粘贴 JSON 数组，每项含 slug / title / source / summary。兼容 Teambition 等工具导出后整理的需求列表。</p>
+  <textarea id="impText" placeholder='[
+  {"slug":"dark-mode","title":"深色模式","source":"pool://team-42","summary":"全局深色主题"},
+  {"slug":"export-csv","title":"导出 CSV","source":"pool://team-43"}
+]'></textarea>
+  <div class="error" id="impError"></div>
+  <div class="row"><button class="ghost" onclick="dlgImport.close()">取消</button><button class="primary" onclick="submitImport()">导入</button></div>
+</dialog>
+
+<dialog id="dlgNewTask">
+  <h2>新建任务</h2>
+  <label>标题 *</label><input type="text" id="ntTitle">
+  <label>Slug *（用于生成任务 ID）</label><input type="text" id="ntSlug">
+  <label>类型</label>
+  <select id="ntKind"><option value="feature">feature</option><option value="bug">bug</option><option value="chore">chore</option></select>
+  <label>规模</label>
+  <select id="ntLarge"><option value="small">small</option><option value="large">large</option></select>
+  <div class="error" id="ntError"></div>
+  <div class="row"><button class="ghost" onclick="dlgNewTask.close()">取消</button><button class="primary" onclick="submitNewTask()">创建</button></div>
+</dialog>
+
+<dialog id="dlgConvert">
+  <h2>转换为任务</h2>
+  <p class="hint" id="cvMeta"></p>
+  <label>任务标题 *</label><input type="text" id="cvTitle">
+  <label>Slug *（任务 ID 用）</label><input type="text" id="cvSlug">
+  <label>类型</label>
+  <select id="cvKind"><option value="feature">feature</option><option value="bug">bug</option><option value="chore">chore</option></select>
+  <div class="error" id="cvError"></div>
+  <div class="row"><button class="ghost" onclick="dlgConvert.close()">取消</button><button class="primary" onclick="submitConvert()">创建任务并关联</button></div>
+</dialog>
+
+<dialog id="dlgDetail">
+  <h2 id="dtTitle"></h2>
+  <div id="dtBody"></div>
+  <div class="row"><button class="ghost" onclick="dlgDetail.close()">关闭</button></div>
+</dialog>
+
+<div class="toast" id="toast"></div>
+
+<script>
+const $ = id => document.getElementById(id);
+const api = (path, opts) => fetch(path, opts).then(async r => {
+  if (!r.ok) throw new Error((await r.text()) || r.statusText);
+  return r.json();
+});
+function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
+function esc(s) { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
+
+function showTab(which) {
+  $('viewReq').style.display = which === 'req' ? '' : 'none';
+  $('viewBoard').style.display = which === 'board' ? '' : 'none';
+  $('tabReq').classList.toggle('active', which === 'req');
+  $('tabBoard').classList.toggle('active', which === 'board');
+  if (which === 'req') loadReqs(); else loadBoard();
+}
+$('tabReq').onclick = () => showTab('req');
+$('tabBoard').onclick = () => showTab('board');
+
+async function loadReqs() {
+  const data = await api('/api/requirements');
+  $('reqRows').innerHTML = data.requirements.map(r => `
+    <tr class="clickable" onclick="openDetail('${esc(r.id)}')">
+      <td class="meta">${esc(r.id)}</td>
+      <td>${esc(r.title)}</td>
+      <td><span class="badge ${esc(r.status)}">${esc(r.status)}</span></td>
+      <td class="progress">${r.total ? `${r.done}/${r.total}` : '—'}</td>
+      <td class="meta">${esc(r.source)}</td>
+      <td>
+        <button class="ghost mini" onclick="event.stopPropagation();openConvert('${esc(r.id)}')">转任务</button>
+        ${r.status !== 'completed' ? `<button class="ghost mini" onclick="event.stopPropagation();completeReq('${esc(r.id)}')">完成</button>` : ''}
+      </td>
+    </tr>`).join('') || '<tr><td colspan="6" class="meta">暂无需求，点击「新建需求」创建</td></tr>';
+}
+
+async function openDetail(id) {
+  const d = await api('/api/requirements/' + encodeURIComponent(id));
+  $('dtTitle').textContent = d.title || d.id;
+  const linked = (d.linked || []).map(l => l.missing
+    ? `<li class="miss">✗ ${esc(l.id)}（已不存在）</li>`
+    : `<li><span class="badge ${esc(l.state)}">${esc(l.state)}</span> ${esc(l.id)} — ${esc(l.title)}</li>`).join('');
+  $('dtBody').innerHTML = `
+    <p class="meta">${esc(d.id)} · <span class="badge ${esc(d.status)}">${esc(d.status)}</span> · 来源 ${esc(d.source)} · 创建 ${esc(d.created)}</p>
+    <p><b>摘要</b><br>${esc(d.summary) || '<span class="meta">（空）</span>'}</p>
+    ${d.notes ? `<p><b>备注</b><br>${esc(d.notes)}</p>` : ''}
+    <div class="linked"><b>关联任务（${d.done}/${d.total}）</b><ul class="linked">${linked || '<li class="meta">尚未关联任务</li>'}</ul></div>`;
+  dlgDetail.showModal();
+}
+
+async function completeReq(id) {
+  await api('/api/requirements/complete', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ id }) });
+  toast('已完成'); loadReqs();
+}
+
+function openNewReq() { $('nrError').textContent = ''; dlgNewReq.showModal(); }
+async function submitNewReq() {
+  try {
+    await api('/api/requirements', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: $('nrSlug').value.trim(), title: $('nrTitle').value.trim(), source: $('nrSource').value.trim(), summary: $('nrSummary').value }) });
+    dlgNewReq.close(); $('nrTitle').value = $('nrSlug').value = $('nrSource').value = $('nrSummary').value = '';
+    toast('已创建'); loadReqs();
+  } catch (e) { $('nrError').textContent = e.message; }
+}
+
+function openImport() { $('impError').textContent = ''; dlgImport.showModal(); }
+async function submitImport() {
+  let items;
+  try { items = JSON.parse($('impText').value); } catch (e) { $('impError').textContent = 'JSON 解析失败：' + e.message; return; }
+  if (!Array.isArray(items)) { $('impError').textContent = '需要 JSON 数组'; return; }
+  try {
+    const resp = await api('/api/requirements/import', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(items) });
+    const failCount = Object.keys(resp.failed || {}).length;
+    toast(`已导入 ${resp.created.length} 条${failCount ? `，失败 ${failCount} 条` : ''}`);
+    dlgImport.close(); $('impText').value = ''; loadReqs();
+  } catch (e) { $('impError').textContent = e.message; }
+}
+
+function openNewTask() { $('ntError').textContent = ''; dlgNewTask.showModal(); }
+async function submitNewTask() {
+  try {
+    await api('/api/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: $('ntSlug').value.trim(), title: $('ntTitle').value.trim(), kind: $('ntKind').value, large: $('ntLarge').value === 'large' }) });
+    dlgNewTask.close(); $('ntTitle').value = $('ntSlug').value = '';
+    toast('任务已创建'); loadBoard();
+  } catch (e) { $('ntError').textContent = e.message; }
+}
+
+let convertTarget = null;
+async function openConvert(id) {
+  const d = await api('/api/requirements/' + encodeURIComponent(id));
+  convertTarget = id;
+  $('cvMeta').textContent = `${d.id} · ${d.title || ''}`;
+  $('cvTitle').value = d.title || '';
+  $('cvSlug').value = id.replace(/-req$/, '').replace(/^\d{8}-/, '') || 'task';
+  $('cvError').textContent = '';
+  dlgConvert.showModal();
+}
+async function submitConvert() {
+  try {
+    const task = await api('/api/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ slug: $('cvSlug').value.trim(), title: $('cvTitle').value.trim(), kind: $('cvKind').value, large: false }) });
+    const taskID = task.path.split(/[\\/]/).pop().replace(/[\\/]spec\.md$/, '');
+    await api('/api/requirements/convert', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: convertTarget, tasks: [taskID] }) });
+    dlgConvert.close();
+    toast('已创建任务 ' + taskID + ' 并关联需求'); loadReqs();
+  } catch (e) { $('cvError').textContent = e.message; }
+}
+
+async function loadBoard() {
+  const data = await api('/api/board');
+  $('board').innerHTML = data.states.map(state => `
+    <div class="column">
+      <h3>${esc(state)} <span class="count">${data.tasks[state]?.length || 0}</span></h3>
+      <div class="cards">
+        ${(data.tasks[state] || []).map(t => `
+          <div class="card" title="${esc(t.id)}">
+            <div class="id">${esc(t.id)}${t.group ? ' · ' + esc(t.group) : ''}</div>
+            <div class="title">${esc(t.title)}</div>
+          </div>`).join('') || '<div class="meta" style="padding:4px 6px">空</div>'}
+      </div>
+    </div>`).join('');
+}
+
+api('/api/board').then(b => { /* warm-up + root check */ }).catch(e => toast('看板加载失败：' + e.message));
+showTab('req');
+</script>
+</body>
+</html>

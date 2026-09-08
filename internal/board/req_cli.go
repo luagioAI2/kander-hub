@@ -10,8 +10,6 @@ import (
 	"os"
 	"strconv"
 	"strings"
-
-	"github.com/dualface/kander/internal/reqtui"
 )
 
 func reqUsage(w io.Writer, action string) {
@@ -26,6 +24,7 @@ func reqUsage(w io.Writer, action string) {
 		"remove":   "board.messages.req-remove",
 		"complete": "board.messages.req-complete",
 		"tui":      "board.messages.req-tui",
+		"serve":    "board.messages.req-serve",
 	}
 	if id, ok := messages[action]; ok {
 		fmt.Fprintln(w, t(id))
@@ -89,6 +88,20 @@ func findRequirement(reqs []Requirement, id string) (Requirement, error) {
 	return Requirement{}, kanbanError("board.req_requirement_not_found", id)
 }
 
+// RunWebServe is set by internal/web on registration; it implements the
+// `kander req serve` action. Declared as a hook so board does not import the
+// web package (web itself imports board).
+var RunWebServe func(args []string) int
+
+// RequirementLinkedRef describes one linked task of a requirement; Missing
+// means the linked ID no longer exists on the board.
+type RequirementLinkedRef struct {
+	ID      string `json:"id"`
+	Title   string `json:"title"`
+	State   string `json:"state"`
+	Missing bool   `json:"missing"`
+}
+
 // RunRequirement implements kander req.
 func RunRequirement(args []string) int {
 	if len(args) == 0 {
@@ -111,8 +124,12 @@ func RunRequirement(args []string) int {
 		return runReqRemove(rest)
 	case "complete":
 		return runReqComplete(rest)
-	case "tui":
-		return runReqTUI(rest)
+	case "serve":
+		if RunWebServe == nil {
+			fmt.Fprintln(os.Stderr, t("board.req_unknown_action", action))
+			return 2
+		}
+		return RunWebServe(rest)
 	case "-h", "--help":
 		reqUsage(os.Stdout, "")
 		return 0
@@ -123,88 +140,9 @@ func RunRequirement(args []string) int {
 	}
 }
 
-// runReqTUI launches the standalone requirements-pool TUI. It is intentionally
-// separate from the main kander board so the kander TUI does not need to know
-// about requirements and upstream sync stays conflict-free.
-func runReqTUI(args []string) int {
-	values := map[string]string{}
-	var err error
-	args, values["--lang"], _, err = takeValueFlag(args, "--lang")
-	if err != nil {
-		return reqUsageFail("tui", "board.option_requires_a_value", "--lang")
-	}
-	root, err := requireRoot()
-	if err != nil {
-		return fail(err)
-	}
-	cfg := reqtui.Config{
-		Lang:    values["--lang"],
-		Stdin:   os.Stdin,
-		Stdout:  os.Stdout,
-		Refresh: 0,
-		LoadSummary: func() ([]reqtui.RequirementSummary, error) {
-			reqs, _, err := LoadRequirements(root)
-			if err != nil {
-				return nil, err
-			}
-			out := make([]reqtui.RequirementSummary, 0, len(reqs))
-			for _, req := range reqs {
-				live, lerr := RequirementStatus(req, root)
-				if lerr != nil {
-					live = req
-				}
-				out = append(out, reqtui.RequirementSummary{
-					ID:     live.ID,
-					Title:  live.Title,
-					Status: live.Status,
-					Source: live.Source,
-					Done:   live.Done,
-					Total:  live.Total,
-				})
-			}
-			return out, nil
-		},
-		LoadDetail: func(id string) (reqtui.RequirementDetail, error) {
-			reqs, lerr := loadReqsForRun(root)
-			if lerr != nil {
-				return reqtui.RequirementDetail{}, lerr
-			}
-			req, ferr := findRequirement(reqs, id)
-			if ferr != nil {
-				return reqtui.RequirementDetail{}, ferr
-			}
-			live, serr := RequirementStatus(req, root)
-			if serr != nil {
-				live = req
-			}
-			links, lerr := requirementLinkedRefs(root, live)
-			if lerr != nil {
-				return reqtui.RequirementDetail{}, lerr
-			}
-			return reqtui.RequirementDetail{
-				ID:       live.ID,
-				Title:    live.Title,
-				Status:   live.Status,
-				Source:   live.Source,
-				Done:     live.Done,
-				Total:    live.Total,
-				Document: requirementDetailBody(live),
-				Linked:   links,
-			}, nil
-		},
-	}
-	if err = reqtui.Run(cfg); err != nil {
-		if err == io.EOF {
-			return 0
-		}
-		return fail(err)
-	}
-	return 0
-}
-
 // requirementLinkedRefs expands a requirement's linked tasks and task groups
 // into per-task refs, marking entries that no longer exist on the board.
-func requirementLinkedRefs(root string, req Requirement) ([]reqtui.LinkedRef, error) {
+func requirementLinkedRefs(root string, req Requirement) ([]RequirementLinkedRef, error) {
 	linked := append([]string{}, req.Tasks...)
 	boardState, err := Scan(root)
 	if err != nil {
@@ -223,15 +161,15 @@ func requirementLinkedRefs(root string, req Requirement) ([]reqtui.LinkedRef, er
 		linked = append(linked, groupMembers[group]...)
 	}
 	linked = uniqueKeepOrder(linked)
-	out := make([]reqtui.LinkedRef, 0, len(linked))
+	out := make([]RequirementLinkedRef, 0, len(linked))
 	for _, taskID := range linked {
 		entry, ok := boardState.Entries[taskID]
 		if !ok {
-			out = append(out, reqtui.LinkedRef{ID: taskID, Missing: true})
+			out = append(out, RequirementLinkedRef{ID: taskID, Missing: true})
 			continue
 		}
 		title := entryTitle(texts, taskID)
-		out = append(out, reqtui.LinkedRef{
+		out = append(out, RequirementLinkedRef{
 			ID:    taskID,
 			Title: title,
 			State: entry.State,
