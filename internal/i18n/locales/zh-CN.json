@@ -812,7 +812,7 @@
   "board.transaction_decision_required": "必须提供明确决定引用及终止原因，或契约修订决定。",
   "board.transaction_managed": "update 不得修改受管字段或文档：{{.V0}}",
   "board.messages.update": "用法: kander update <id> --document <relative-path> --file <UTF8-input> --expect-revision <revision> [--contract-decision-file <file>]",
-  "board.messages.req": "用法: kander req <new|list|show|convert|link|unlink|remove|complete> [参数]",
+  "board.messages.req": "用法: kander req <new|list|show|convert|link|unlink|remove|complete|tui> [参数]",
   "board.messages.req-new": "用法: kander req new --source <来源或路径> [--summary-file <文件>] <slug> <标题...>",
   "board.messages.req-list": "用法: kander req list [--status <状态>] [--json]",
   "board.messages.req-show": "用法: kander req show [--json] <需求ID>",
@@ -855,5 +855,14 @@
   "review.archive_card_failed": "卡片 {{.V0}} 未发布：{{.V1}}",
   "review.archive_card_published": "卡片 {{.V0}} 已发布运行 {{.V1}}（执行={{.V2}}；语义结论未判定）",
   "review.archive_tree_incomplete": "Reviewer 进程回收未完成；结果已拒绝",
-  "review.gate_usage": "证据命令:\nkander review <plan|extend-plan|assign|map-legacy|advance|close> <CWD> <JSON>\nkander review disposition <CWD> <JSON> <expected-revision>\nkander review <aggregate|progress> <CWD> <batch-id|task-id>\n计划显式记录角色要求；汇总保留原作者记录；关闭批次核验最终 Git 证据。"
+  "review.gate_usage": "证据命令:\nkander review <plan|extend-plan|assign|map-legacy|advance|close> <CWD> <JSON>\nkander review disposition <CWD> <JSON> <expected-revision>\nkander review <aggregate|progress> <CWD> <batch-id|task-id>\n计划显式记录角色要求；汇总保留原作者记录；关闭批次核验最终 Git 证据。",
+  "board.messages.req-tui": "用法: kander req tui [--lang <cn|en|ja>]",
+  "reqtui.title": "需求池",
+  "reqtui.updated": "更新 {{.V0}}",
+  "reqtui.empty": "(暂无需求卡)",
+  "reqtui.footer": "j/k 移动  Enter 进入详情  q 退出",
+  "reqtui.use_kander_req_new": "请使用 `kander req new --source <id> <slug> <标题>` 创建",
+  "reqtui.detail_title": "{{.V0}}",
+  "reqtui.detail_no_links": "(尚未关联任务)",
+  "reqtui.detail_footer": "j/k 滚动  q/Esc 返回"
 }

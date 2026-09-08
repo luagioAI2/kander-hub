@@ -812,7 +812,7 @@
   "board.transaction_decision_required": "明示的な決定の参照と終了理由、または契約変更の決定が必要です。",
   "board.transaction_managed": "update では管理対象を変更できません: {{.V0}}",
   "board.messages.update": "使い方: kander update <id> --document <relative-path> --file <UTF8-input> --expect-revision <revision> [--contract-decision-file <file>]",
-  "board.messages.req": "使い方: kander req <new|list|show|convert|link|unlink|remove|complete> [引数]",
+  "board.messages.req": "使い方: kander req <new|list|show|convert|link|unlink|remove|complete|tui> [引数]",
   "board.messages.req-new": "使い方: kander req new --source <ソースまたはパス> [--summary-file <ファイル>] <slug> <タイトル...>",
   "board.messages.req-list": "使い方: kander req list [--status <状態>] [--json]",
   "board.messages.req-show": "使い方: kander req show [--json] <要件ID>",
@@ -855,5 +855,14 @@
   "review.archive_card_failed": "カード {{.V0}} は未公開です: {{.V1}}",
   "review.archive_card_published": "カード {{.V0}} に実行 {{.V1}} を公開しました（実行={{.V2}}、意味上の結果は未判定）",
   "review.archive_tree_incomplete": "Reviewer プロセスの回収が未完了です。結果を拒否しました",
-  "review.gate_usage": "証拠コマンド:\nkander review <plan|extend-plan|assign|map-legacy|advance|close> <CWD> <JSON>\nkander review disposition <CWD> <JSON> <expected-revision>\nkander review <aggregate|progress> <CWD> <batch-id|task-id>\n計画はロール要件を明示し、集約は原著者の記録を保持し、終了処理は最終 Git 証拠を検証します。"
+  "review.gate_usage": "証拠コマンド:\nkander review <plan|extend-plan|assign|map-legacy|advance|close> <CWD> <JSON>\nkander review disposition <CWD> <JSON> <expected-revision>\nkander review <aggregate|progress> <CWD> <batch-id|task-id>\n計画はロール要件を明示し、集約は原著者の記録を保持し、終了処理は最終 Git 証拠を検証します。",
+  "board.messages.req-tui": "使い方: kander req tui [--lang <cn|en|ja>]",
+  "reqtui.title": "要件プール",
+  "reqtui.updated": "更新 {{.V0}}",
+  "reqtui.empty": "(要件カードはまだありません)",
+  "reqtui.footer": "j/k 移動  Enter 詳細  q 終了",
+  "reqtui.use_kander_req_new": "`kander req new --source <id> <slug> <タイトル>` で作成してください",
+  "reqtui.detail_title": "{{.V0}}",
+  "reqtui.detail_no_links": "(関連タスクはまだありません)",
+  "reqtui.detail_footer": "j/k スクロール  q/Esc 戻る"
 }
