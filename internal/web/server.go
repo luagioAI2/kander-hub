@@ -30,6 +30,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/requirements/complete", s.completeRequirement)
 	mux.HandleFunc("GET /api/board", s.getBoard)
 	mux.HandleFunc("POST /api/tasks", s.createTask)
+	mux.HandleFunc("GET /api/tasks/", s.getTask)
 	mux.HandleFunc("GET /", s.index)
 	return mux
 }

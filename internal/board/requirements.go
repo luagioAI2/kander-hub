@@ -236,7 +236,10 @@ func AddRequirement(root, slug, title, source, summary string) (string, error) {
 		return "", kanbanError("board.title_must_not_be_empty_or_contain_newlines")
 	}
 	if source == "" {
-		return "", kanbanError("board.req_source_is_required")
+		// An empty source is accepted as the new "no source" sentinel; the
+		// storage layer normalises it to "N/A" so the front-matter stays
+		// well-formed without forcing the caller to invent a value.
+		source = "N/A"
 	}
 	if source != "N/A" && strings.ContainsAny(source, "\n\r") {
 		return "", kanbanError("board.transaction_invalid", "SOURCE")

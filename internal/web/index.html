@@ -27,6 +27,8 @@ th, td { text-align: left; padding: 9px 12px; border-bottom: 1px solid var(--edg
 th { font-size: 12px; color: var(--dim); text-transform: uppercase; letter-spacing: .04em; }
 tr.clickable { cursor: pointer; }
 tr.clickable:hover { background: #f0f4ff; }
+.card.clickable { cursor: pointer; transition: border-color .15s, box-shadow .15s; }
+.card.clickable:hover { border-color: var(--accent); box-shadow: 0 1px 4px rgba(37,99,235,.18); }
 .badge { display: inline-block; font-size: 12px; padding: 2px 8px; border-radius: 10px; }
 .badge.draft { background: #fef3c7; color: #92400e; }
 .badge.decomposed { background: #dbeafe; color: #1e40af; }
@@ -37,6 +39,13 @@ tr.clickable:hover { background: #f0f4ff; }
 .badge.working { background: #e9d5ff; color: #6b21a8; }
 .badge.review { background: #fce7f3; color: #9d174d; }
 .badge.done { background: #dcfce7; color: #166534; }
+.badge.archived-state { background: #e5e7eb; color: #4b5563; }
+.badge.trash { background: #fee2e2; color: #991b1b; }
+.badge.feature { background: #ecfeff; color: #155e75; }
+.badge.bug { background: #fee2e2; color: #991b1b; }
+.badge.chore { background: #ede9fe; color: #5b21b6; }
+.badge.large { background: #fef3c7; color: #92400e; }
+.badge.small { background: #f3f4f6; color: #4b5563; }
 .progress { font-variant-numeric: tabular-nums; color: var(--dim); }
 .board { display: flex; gap: 12px; align-items: flex-start; overflow-x: auto; padding-bottom: 12px; }
 .column { background: var(--panel); border-radius: 8px; min-width: 230px; flex: 1; box-shadow: 0 1px 2px rgba(0,0,0,.06); }
@@ -46,7 +55,9 @@ tr.clickable:hover { background: #f0f4ff; }
 .card { border: 1px solid var(--edge); border-radius: 6px; padding: 8px 10px; background: #fff; }
 .card .id { font-size: 11px; color: var(--dim); }
 .card .title { font-weight: 600; margin: 2px 0; }
-dialog { border: 1px solid var(--edge); border-radius: 10px; padding: 20px; width: 480px; max-width: 92vw; }
+.card .meta { display: flex; gap: 6px; flex-wrap: wrap; margin-top: 4px; }
+dialog { border: 1px solid var(--edge); border-radius: 10px; padding: 20px; width: 540px; max-width: 92vw; }
+dialog.wide { width: 720px; }
 dialog::backdrop { background: rgba(0,0,0,.35); }
 dialog h2 { margin: 0 0 12px; font-size: 16px; }
 label { display: block; font-size: 12px; color: var(--dim); margin: 10px 0 4px; }
@@ -60,9 +71,11 @@ textarea { min-height: 80px; resize: vertical; }
 .toast { position: fixed; bottom: 18px; left: 50%; transform: translateX(-50%); background: var(--ink); color: #fff; padding: 8px 18px; border-radius: 8px; opacity: 0; transition: opacity .25s; pointer-events: none; }
 .toast.show { opacity: .92; }
 .error { color: var(--bad); font-size: 12px; margin-top: 8px; white-space: pre-wrap; }
-#detailBody { max-height: 55vh; overflow: auto; }
+#detailBody, #taskDetailBody { max-height: 60vh; overflow: auto; }
 .import-box textarea { min-height: 160px; font-family: Consolas, monospace; font-size: 12px; }
 .hint { font-size: 12px; color: var(--dim); margin-top: 4px; }
+pre.doc { white-space: pre-wrap; font-family: Consolas, monospace; font-size: 12px; background: #f9fafb; border: 1px solid var(--edge); border-radius: 6px; padding: 10px; max-height: 320px; overflow: auto; }
+.empty { color: var(--dim); font-style: italic; padding: 12px; }
 </style>
 </head>
 <body>
@@ -79,11 +92,11 @@ textarea { min-height: 80px; resize: vertical; }
   <section id="viewReq">
     <div style="display:flex;gap:8px;margin-bottom:12px">
       <button class="primary" onclick="openNewReq()">新建需求</button>
-      <button class="ghost" onclick="openImport()">导入公共需求</button>
+      <button class="ghost" onclick="openImport()">导入</button>
       <button class="ghost" onclick="loadReqs()">刷新</button>
     </div>
     <table>
-      <thead><tr><th>ID</th><th>标题</th><th>状态</th><th>进度</th><th>来源</th><th></th></tr></thead>
+      <thead><tr><th>ID</th><th>标题</th><th>状态</th><th>进度</th><th></th></tr></thead>
       <tbody id="reqRows"></tbody>
     </table>
   </section>
@@ -100,7 +113,6 @@ textarea { min-height: 80px; resize: vertical; }
 <dialog id="dlgNewReq">
   <h2>新建需求</h2>
   <label>标题 *</label><input type="text" id="nrTitle">
-  <label>来源标识 *（如 pool://team-42）</label><input type="text" id="nrSource">
   <label>Slug *（用于生成 ID，如 login-fix）</label><input type="text" id="nrSlug">
   <label>摘要</label><textarea id="nrSummary"></textarea>
   <div class="error" id="nrError"></div>
@@ -108,11 +120,11 @@ textarea { min-height: 80px; resize: vertical; }
 </dialog>
 
 <dialog id="dlgImport" class="import-box">
-  <h2>导入公共需求</h2>
-  <p class="hint">粘贴 JSON 数组，每项含 slug / title / source / summary。兼容 Teambition 等工具导出后整理的需求列表。</p>
+  <h2>导入需求</h2>
+  <p class="hint">粘贴 JSON 数组，每项含 slug / title / summary。导入会逐条尝试，单条失败不影响其他项。</p>
   <textarea id="impText" placeholder='[
-  {"slug":"dark-mode","title":"深色模式","source":"pool://team-42","summary":"全局深色主题"},
-  {"slug":"export-csv","title":"导出 CSV","source":"pool://team-43"}
+  {"slug":"dark-mode","title":"深色模式","summary":"全局深色主题"},
+  {"slug":"export-csv","title":"导出 CSV"}
 ]'></textarea>
   <div class="error" id="impError"></div>
   <div class="row"><button class="ghost" onclick="dlgImport.close()">取消</button><button class="primary" onclick="submitImport()">导入</button></div>
@@ -123,9 +135,9 @@ textarea { min-height: 80px; resize: vertical; }
   <label>标题 *</label><input type="text" id="ntTitle">
   <label>Slug *（用于生成任务 ID）</label><input type="text" id="ntSlug">
   <label>类型</label>
-  <select id="ntKind"><option value="feature">feature</option><option value="bug">bug</option><option value="chore">chore</option></select>
+  <select id="ntKind"><option value="feature">功能（feature）</option><option value="bug">缺陷（bug）</option><option value="chore">杂务（chore）</option></select>
   <label>规模</label>
-  <select id="ntLarge"><option value="small">small</option><option value="large">large</option></select>
+  <select id="ntLarge"><option value="small">小（small）</option><option value="large">大（large）</option></select>
   <div class="error" id="ntError"></div>
   <div class="row"><button class="ghost" onclick="dlgNewTask.close()">取消</button><button class="primary" onclick="submitNewTask()">创建</button></div>
 </dialog>
@@ -133,18 +145,25 @@ textarea { min-height: 80px; resize: vertical; }
 <dialog id="dlgConvert">
   <h2>转换为任务</h2>
   <p class="hint" id="cvMeta"></p>
+  <p class="hint">为这个需求新建一张任务卡，并自动建立关联。不会调用任何 AI agent。</p>
   <label>任务标题 *</label><input type="text" id="cvTitle">
   <label>Slug *（任务 ID 用）</label><input type="text" id="cvSlug">
   <label>类型</label>
-  <select id="cvKind"><option value="feature">feature</option><option value="bug">bug</option><option value="chore">chore</option></select>
+  <select id="cvKind"><option value="feature">功能（feature）</option><option value="bug">缺陷（bug）</option><option value="chore">杂务（chore）</option></select>
   <div class="error" id="cvError"></div>
-  <div class="row"><button class="ghost" onclick="dlgConvert.close()">取消</button><button class="primary" onclick="submitConvert()">创建任务并关联</button></div>
+  <div class="row"><button class="ghost" onclick="dlgConvert.close()">取消</button><button class="primary" onclick="submitConvert()">创建并关联</button></div>
 </dialog>
 
 <dialog id="dlgDetail">
   <h2 id="dtTitle"></h2>
-  <div id="dtBody"></div>
+  <div id="detailBody"></div>
   <div class="row"><button class="ghost" onclick="dlgDetail.close()">关闭</button></div>
+</dialog>
+
+<dialog id="dlgTaskDetail" class="wide">
+  <h2 id="tdTitle"></h2>
+  <div id="taskDetailBody"></div>
+  <div class="row"><button class="ghost" onclick="dlgTaskDetail.close()">关闭</button></div>
 </dialog>
 
 <div class="toast" id="toast"></div>
@@ -157,6 +176,12 @@ const api = (path, opts) => fetch(path, opts).then(async r => {
 });
 function toast(msg) { const t = $('toast'); t.textContent = msg; t.classList.add('show'); setTimeout(() => t.classList.remove('show'), 2200); }
 function esc(s) { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
+
+// Chinese label maps. The kander core still speaks English in storage and the
+// API; the frontend renders these labels for users.
+const reqStatusLabel = { draft: '草稿', decomposed: '已拆解', completed: '已完成', archived: '已归档' };
+const taskStateLabel = { backlog: '待办池', todo: '待开始', working: '进行中', review: '评审', done: '已完成', archived: '已归档', trash: '回收站' };
+const taskTypeLabel = { feature: '功能', bug: '缺陷', chore: '杂务' };
 
 function showTab(which) {
   $('viewReq').style.display = which === 'req' ? '' : 'none';
@@ -174,14 +199,13 @@ async function loadReqs() {
     <tr class="clickable" onclick="openDetail('${esc(r.id)}')">
       <td class="meta">${esc(r.id)}</td>
       <td>${esc(r.title)}</td>
-      <td><span class="badge ${esc(r.status)}">${esc(r.status)}</span></td>
+      <td><span class="badge ${esc(r.status)}">${esc(reqStatusLabel[r.status] || r.status)}</span></td>
       <td class="progress">${r.total ? `${r.done}/${r.total}` : '—'}</td>
-      <td class="meta">${esc(r.source)}</td>
       <td>
         <button class="ghost mini" onclick="event.stopPropagation();openConvert('${esc(r.id)}')">转任务</button>
         ${r.status !== 'completed' ? `<button class="ghost mini" onclick="event.stopPropagation();completeReq('${esc(r.id)}')">完成</button>` : ''}
       </td>
-    </tr>`).join('') || '<tr><td colspan="6" class="meta">暂无需求，点击「新建需求」创建</td></tr>';
+    </tr>`).join('') || '<tr><td colspan="5" class="meta empty">暂无需求，点击「新建需求」创建</td></tr>';
 }
 
 async function openDetail(id) {
@@ -189,9 +213,9 @@ async function openDetail(id) {
   $('dtTitle').textContent = d.title || d.id;
   const linked = (d.linked || []).map(l => l.missing
     ? `<li class="miss">✗ ${esc(l.id)}（已不存在）</li>`
-    : `<li><span class="badge ${esc(l.state)}">${esc(l.state)}</span> ${esc(l.id)} — ${esc(l.title)}</li>`).join('');
-  $('dtBody').innerHTML = `
-    <p class="meta">${esc(d.id)} · <span class="badge ${esc(d.status)}">${esc(d.status)}</span> · 来源 ${esc(d.source)} · 创建 ${esc(d.created)}</p>
+    : `<li><span class="badge ${esc(l.state)}">${esc(taskStateLabel[l.state] || l.state)}</span> <a class="clickable" onclick="dlgDetail.close();openTaskDetail('${esc(l.id)}')" style="cursor:pointer;text-decoration:underline">${esc(l.id)}</a> — ${esc(l.title)}</li>`).join('');
+  $('detailBody').innerHTML = `
+    <p class="meta">${esc(d.id)} · <span class="badge ${esc(d.status)}">${esc(reqStatusLabel[d.status] || d.status)}</span> · 创建 ${esc(d.created)}</p>
     <p><b>摘要</b><br>${esc(d.summary) || '<span class="meta">（空）</span>'}</p>
     ${d.notes ? `<p><b>备注</b><br>${esc(d.notes)}</p>` : ''}
     <div class="linked"><b>关联任务（${d.done}/${d.total}）</b><ul class="linked">${linked || '<li class="meta">尚未关联任务</li>'}</ul></div>`;
@@ -207,8 +231,8 @@ function openNewReq() { $('nrError').textContent = ''; dlgNewReq.showModal(); }
 async function submitNewReq() {
   try {
     await api('/api/requirements', { method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ slug: $('nrSlug').value.trim(), title: $('nrTitle').value.trim(), source: $('nrSource').value.trim(), summary: $('nrSummary').value }) });
-    dlgNewReq.close(); $('nrTitle').value = $('nrSlug').value = $('nrSource').value = $('nrSummary').value = '';
+      body: JSON.stringify({ slug: $('nrSlug').value.trim(), title: $('nrTitle').value.trim(), summary: $('nrSummary').value }) });
+    dlgNewReq.close(); $('nrTitle').value = $('nrSlug').value = $('nrSummary').value = '';
     toast('已创建'); loadReqs();
   } catch (e) { $('nrError').textContent = e.message; }
 }
@@ -250,7 +274,7 @@ async function submitConvert() {
   try {
     const task = await api('/api/tasks', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ slug: $('cvSlug').value.trim(), title: $('cvTitle').value.trim(), kind: $('cvKind').value, large: false }) });
-    const taskID = task.path.split(/[\\/]/).pop().replace(/[\\/]spec\.md$/, '');
+    const taskID = task.path.split(/[\\/]/).filter(Boolean).pop().replace(/[\\/]spec\.md$/, '').replace(/\.md$/, '');
     await api('/api/requirements/convert', { method: 'POST', headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ id: convertTarget, tasks: [taskID] }) });
     dlgConvert.close();
@@ -262,18 +286,36 @@ async function loadBoard() {
   const data = await api('/api/board');
   $('board').innerHTML = data.states.map(state => `
     <div class="column">
-      <h3>${esc(state)} <span class="count">${data.tasks[state]?.length || 0}</span></h3>
+      <h3>${esc(taskStateLabel[state] || state)} <span class="count">${data.tasks[state]?.length || 0}</span></h3>
       <div class="cards">
         ${(data.tasks[state] || []).map(t => `
-          <div class="card" title="${esc(t.id)}">
+          <div class="card clickable" onclick="openTaskDetail('${esc(t.id)}')" title="点击查看详情">
             <div class="id">${esc(t.id)}${t.group ? ' · ' + esc(t.group) : ''}</div>
             <div class="title">${esc(t.title)}</div>
-          </div>`).join('') || '<div class="meta" style="padding:4px 6px">空</div>'}
+            <div class="meta">${esc(taskTypeLabel[t.type] || t.type)}${t.state === 'archived' ? ' · <span class="badge archived-state">已归档</span>' : ''}</div>
+          </div>`).join('') || '<div class="empty">空</div>'}
       </div>
     </div>`).join('');
 }
 
-api('/api/board').then(b => { /* warm-up + root check */ }).catch(e => toast('看板加载失败：' + e.message));
+async function openTaskDetail(id) {
+  try {
+    const d = await api('/api/tasks/' + encodeURIComponent(id));
+    $('tdTitle').textContent = d.title || d.id;
+    const backrefs = (d.requirements || []).map(r =>
+      `<li><span class="badge ${esc(r.status)}">${esc(reqStatusLabel[r.status] || r.status)}</span> <a class="clickable" onclick="dlgTaskDetail.close();openDetail('${esc(r.id)}')" style="cursor:pointer;text-decoration:underline">${esc(r.id)}</a> — ${esc(r.title)}</li>`
+    ).join('');
+    const doc = (d.document || '').trim();
+    $('taskDetailBody').innerHTML = `
+      <p class="meta">${esc(d.id)} · <span class="badge ${esc(d.state)}">${esc(taskStateLabel[d.state] || d.state)}</span> · <span class="badge ${esc(d.type)}">${esc(taskTypeLabel[d.type] || d.type)}</span>${d.group ? ' · 任务组 ' + esc(d.group) : ''}</p>
+      <div class="linked"><b>关联需求</b><ul class="linked">${backrefs || '<li class="meta">暂无关联需求</li>'}</ul></div>
+      <h2 style="margin-top:14px;font-size:13px">任务正文</h2>
+      <pre class="doc">${esc(doc)}</pre>`;
+    dlgTaskDetail.showModal();
+  } catch (e) { toast('读取任务失败：' + e.message); }
+}
+
+api('/api/board').then(() => {}).catch(e => toast('看板加载失败：' + e.message));
 showTab('req');
 </script>
 </body>

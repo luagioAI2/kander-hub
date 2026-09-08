@@ -4,7 +4,6 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http"
-	"strings"
 
 	"github.com/dualface/kander/internal/board"
 )
@@ -14,7 +13,6 @@ type requirementRow struct {
 	ID     string `json:"id"`
 	Title  string `json:"title"`
 	Status string `json:"status"`
-	Source string `json:"source"`
 	Done   int    `json:"done"`
 	Total  int    `json:"total"`
 }
@@ -29,26 +27,44 @@ type linkedTask struct {
 
 // requirementDetail is the detail payload for one requirement.
 type requirementDetail struct {
-	ID       string       `json:"id"`
-	Title    string       `json:"title"`
-	Status   string       `json:"status"`
-	Source   string       `json:"source"`
-	Created  string       `json:"created"`
-	Summary  string       `json:"summary"`
-	Notes    string       `json:"notes"`
-	Done     int          `json:"done"`
-	Total    int          `json:"total"`
-	Docs     []string     `json:"docs"`
-	Linked   []linkedTask `json:"linked"`
+	ID      string       `json:"id"`
+	Title   string       `json:"title"`
+	Status  string       `json:"status"`
+	Created string       `json:"created"`
+	Summary string       `json:"summary"`
+	Notes   string       `json:"notes"`
+	Done    int          `json:"done"`
+	Total   int          `json:"total"`
+	Docs    []string     `json:"docs"`
+	Linked  []linkedTask `json:"linked"`
 }
 
 // taskRow is one kanban card shown on the board tab.
 type taskRow struct {
+	ID    string `json:"id"`
+	Title string `json:"title"`
+	State string `json:"state"`
+	Type  string `json:"type"`
+	Group string `json:"group"`
+}
+
+// taskDetail is the payload shown when the user clicks a task card: the
+// raw document plus the requirement(s) that link back to it.
+type taskDetail struct {
+	ID           string         `json:"id"`
+	Title        string         `json:"title"`
+	State        string         `json:"state"`
+	Type         string         `json:"type"`
+	Group        string         `json:"group"`
+	Document     string         `json:"document"`
+	Requirements []reqBackref   `json:"requirements"`
+}
+
+// reqBackref names one requirement that links to this task.
+type reqBackref struct {
 	ID     string `json:"id"`
 	Title  string `json:"title"`
-	State  string `json:"state"`
-	Type   string `json:"type"`
-	Group  string `json:"group"`
+	Status string `json:"status"`
 }
 
 // boardView groups tasks by state for the kanban tab.
@@ -79,7 +95,6 @@ func (s *Server) listRequirements(w http.ResponseWriter, r *http.Request) {
 			ID:     live.ID,
 			Title:  live.Title,
 			Status: live.Status,
-			Source: live.Source,
 			Done:   live.Done,
 			Total:  live.Total,
 		})
@@ -135,7 +150,6 @@ func (s *Server) requirementDetail(id string) (requirementDetail, error) {
 		ID:      live.ID,
 		Title:   live.Title,
 		Status:  live.Status,
-		Source:  live.Source,
 		Created: live.Created,
 		Summary: live.Summary,
 		Notes:   live.Notes,
@@ -196,7 +210,6 @@ func (s *Server) linkedTasks(req board.Requirement) ([]linkedTask, error) {
 type createRequest struct {
 	Slug    string `json:"slug"`
 	Title   string `json:"title"`
-	Source  string `json:"source"`
 	Summary string `json:"summary"`
 	Kind    string `json:"kind"`
 	Large   bool   `json:"large"`
@@ -209,7 +222,10 @@ func (s *Server) createRequirement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, err)
 		return
 	}
-	path, err := board.AddRequirement(s.Root, body.Slug, body.Title, body.Source, body.Summary)
+	// The SOURCE field has been retired from the UI. The storage layer now
+	// normalises an empty source to "N/A", so callers no longer need to
+	// invent a value.
+	path, err := board.AddRequirement(s.Root, body.Slug, body.Title, "", body.Summary)
 	if err != nil {
 		writeError(w, http.StatusBadRequest, err)
 		return
@@ -221,7 +237,6 @@ func (s *Server) createRequirement(w http.ResponseWriter, r *http.Request) {
 type importItem struct {
 	Slug    string `json:"slug"`
 	Title   string `json:"title"`
-	Source  string `json:"source"`
 	Summary string `json:"summary"`
 }
 
@@ -242,7 +257,7 @@ func (s *Server) importRequirements(w http.ResponseWriter, r *http.Request) {
 	}
 	resp := importResponse{Created: []string{}, Failed: map[string]string{}}
 	for _, item := range items {
-		path, err := board.AddRequirement(s.Root, item.Slug, item.Title, item.Source, item.Summary)
+		path, err := board.AddRequirement(s.Root, item.Slug, item.Title, "", item.Summary)
 		if err != nil {
 			resp.Failed[item.Title] = err.Error()
 			continue
@@ -318,11 +333,7 @@ func (s *Server) getBoard(w http.ResponseWriter, r *http.Request) {
 			Title: board.TitleFrom(text),
 			State: entry.State,
 			Group: board.TaskGroupFrom(text),
-		}
-		if strings.HasPrefix(entry.Kind, "large") || entry.Kind == "large" {
-			row.Type = "large"
-		} else {
-			row.Type = "small"
+			Type:  board.MetadataFrom(text, board.FieldType),
 		}
 		view.Tasks[entry.State] = append(view.Tasks[entry.State], row)
 	}
@@ -346,4 +357,67 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusCreated, map[string]string{"path": path})
+}
+
+// getTask handles GET /api/tasks/{id}: returns the full task document plus
+// any requirement that links back to it. Used by the board click handler.
+func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
+	id := idFromPath(r.URL.Path, "/api/tasks/")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, errors.New("task id required"))
+		return
+	}
+	detail, err := s.taskDetail(id)
+	if err != nil {
+		writeError(w, http.StatusNotFound, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, detail)
+}
+
+// taskDetail reads one task card and scans requirements for back-refs.
+func (s *Server) taskDetail(id string) (taskDetail, error) {
+	scan, err := board.Scan(s.Root)
+	if err != nil {
+		return taskDetail{}, err
+	}
+	entry, ok := scan.Entries[id]
+	if !ok {
+		return taskDetail{}, errors.New("task not found: " + id)
+	}
+	text, err := scan.Document(id)
+	if err != nil {
+		return taskDetail{}, err
+	}
+	reqs, _, rerr := board.LoadRequirements(s.Root)
+	if rerr != nil {
+		return taskDetail{}, rerr
+	}
+	backrefs := []reqBackref{}
+	for _, req := range reqs {
+		live, _ := liveRequirement(s.Root, req)
+		linked, lerr := s.linkedTasks(live)
+		if lerr != nil {
+			continue
+		}
+		for _, link := range linked {
+			if link.ID == id && !link.Missing {
+				backrefs = append(backrefs, reqBackref{
+					ID:     live.ID,
+					Title:  live.Title,
+					Status: live.Status,
+				})
+				break
+			}
+		}
+	}
+	return taskDetail{
+		ID:           entry.TaskID,
+		Title:        board.TitleFrom(text),
+		State:        entry.State,
+		Group:        board.TaskGroupFrom(text),
+		Type:         board.MetadataFrom(text, board.FieldType),
+		Document:     text,
+		Requirements: backrefs,
+	}, nil
 }
