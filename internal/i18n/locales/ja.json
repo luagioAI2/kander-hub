@@ -860,6 +860,8 @@
   "board.web_serving": "kander Web UI: http://{{.V0}}",
   "launch.usage_kander_req_decompose_agent_launcher_message_text_message": "使い方: kander req decompose [--agent <agent>] [--launcher <launcher>] (--message <テキスト> | --message-file <ファイル>) <要件ID>",
   "launch.prompt.decompose_head": "kander 要件 {{.V0}} を分解してください。",
-  "launch.prompt.decompose": "{{.V0}}\n\n{{.V1}}\n\n要件本文は kanban/requirements/<id>.md を読んでください（または {{.V2}} show {{.V3}}）。必要ならユーザーに確認質問を行ってください。一度の確認は誤ったタスクカードより安上がりです。合意が取れたら、{{.V2}} new <slug> <タイトル> を 1 回以上実行して backlog にタスクカードを作成し、{{.V2}} req convert {{.V3}} <task-id>... でリンクしてください。ユーザーからの追記指示は以下：\n\n{{.V4}}\n\n{{.V5}} と有効なルールモジュールに従ってください。タスクを working 以降へ進めないでください。それ以降の遷移はユーザーが {{.V2}} start <task-id> を実行した時点で発生します。",
-  "board.messages.req-decompose": "使い方: kander req decompose (--message <テキスト> | --message-file <ファイル>) [--agent <agent>] [--launcher <launcher>] <要件ID>"
+  "launch.prompt.decompose": "{{.V0}}\n\n{{.V1}}\n\n要件本文を kanban/requirements/<id>.md から読み（{{.V2}} show {{.V3}}）、必要ならユーザーに確認質問を。合意後 {{.V2}} new <slug> <タイトル> でカード作成、{{.V2}} req convert {{.V3}} <task-id>... でリンク。ユーザー追記：{{.V4}}\n\n{{.V5}} と有効なルールに従う。working 以降へ進めない。",
+  "board.messages.req-decompose": "使い方: kander req decompose (--message <テキスト> | --message-file <ファイル>) [--agent <agent>] [--launcher <launcher>] <要件ID>",
+  "launch.prompt.decompose_autonomous": "{{.V0}}\n\n{{.V1}}\n\n全自動：質問しない。要件を読み、自ら分割し、{{.V2}} new <slug> <タイトル> でカード作成、{{.V2}} req convert {{.V3}} <task-id>... でリンク。GOAL 等は具体記入、プレースホルダー禁止。ユーザー追記：{{.V4}}\n\n{{.V5}} に従う。working 以降へ進めない。",
+  "launch.usage_decompose_autonomous_hint": "--autonomous: ユーザー確認を省略し、Agent が最後まで分解して作成したタスク ID を報告します。"
 }

@@ -314,8 +314,9 @@ func (s *Server) completeRequirement(w http.ResponseWriter, r *http.Request) {
 // the user must supply a file path. The agent prompt is built by the launch
 // package; web only dispatches into the registered hook.
 type decomposeRequest struct {
-	ID      string `json:"id"`
-	Message string `json:"message"`
+	ID         string `json:"id"`
+	Message    string `json:"message"`
+	Autonomous bool   `json:"autonomous"`
 }
 
 // decomposeRequirement handles POST /api/requirements/decompose: spawns a
@@ -337,7 +338,11 @@ func (s *Server) decomposeRequirement(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, errors.New("id and message are required"))
 		return
 	}
-	args := []string{"--message", body.Message, body.ID}
+	args := []string{"--message", body.Message}
+	if body.Autonomous {
+		args = append(args, "--autonomous")
+	}
+	args = append(args, body.ID)
 	if rc := board.RunRequirementDecompose(args); rc != 0 {
 		writeError(w, http.StatusBadRequest, errors.New("decompose failed; check the launcher pane for details"))
 		return

@@ -19,12 +19,19 @@ type DecomposeArgs struct {
 	Message    string
 	MessageSet bool
 	MessageFile string
+	// Autonomous switches the agent prompt from "discuss with the user,
+	// confirm each card" to "decompose silently and write the cards". The
+	// launcher window still appears; the agent simply does not wait for
+	// user confirmation before writing cards.
+	Autonomous bool
 }
 
 // decomposeAgentPrompt is the body that the Agent receives as its task file.
 // It deliberately reuses startAgentPrompt's rule-loading contract; the
-// differences are the head and the body template.
-func decomposeAgentPrompt(reqID string, paths config.InstallPaths, message, cardText string) (string, error) {
+// differences are the head and the body template. When autonomous is true
+// the collaborative-confirmation wording is swapped for a direct-decompose
+// instruction, but the launcher window behaviour is identical.
+func decomposeAgentPrompt(reqID string, paths config.InstallPaths, message, cardText string, autonomous bool) (string, error) {
 	if paths.Mode == config.ModeProject && paths.ProjectRoot == "" {
 		return "", launchError("config.project_install_paths_are_missing_the_main_worktree")
 	}
@@ -33,6 +40,16 @@ func decomposeAgentPrompt(reqID string, paths config.InstallPaths, message, card
 		return "", err
 	}
 	command := commandName(paths)
+	if autonomous {
+		return t("launch.prompt.decompose_autonomous",
+			t("launch.prompt.decompose_head", reqID),
+			rules,
+			command,
+			reqID,
+			message,
+			promptAgents(paths),
+		), nil
+	}
 	return t("launch.prompt.decompose",
 		t("launch.prompt.decompose_head", reqID),
 		rules,
@@ -100,7 +117,7 @@ func commandDecompose(args DecomposeArgs) error {
 	if err != nil {
 		return err
 	}
-	body, err := decomposeAgentPrompt(reqID, paths, args.Message, original)
+	body, err := decomposeAgentPrompt(reqID, paths, args.Message, original, args.Autonomous)
 	if err != nil {
 		return err
 	}

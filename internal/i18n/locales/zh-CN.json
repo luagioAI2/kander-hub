@@ -860,6 +860,8 @@
   "board.web_serving": "kander Web 界面: http://{{.V0}}",
   "launch.usage_kander_req_decompose_agent_launcher_message_text_message": "用法: kander req decompose [--agent <agent>] [--launcher <launcher>] (--message <文本> | --message-file <文件>) <需求ID>",
   "launch.prompt.decompose_head": "拆解 kander 需求 {{.V0}}。",
-  "launch.prompt.decompose": "{{.V0}}\n\n{{.V1}}\n\n请读取 kanban/requirements/<id>.md（也可运行 {{.V2}} show {{.V3}}）拿到需求正文。需要时与用户先确认边界——一次澄清胜过一张错卡。协商一致后，运行一次或多次 {{.V2}} new <slug> <标题> 在 backlog 下创建任务卡，然后调用 {{.V2}} req convert {{.V3}} <task-id>... 关联它们。用户补充说明如下：\n\n{{.V4}}\n\n遵守 {{.V5}} 与已启用的规则模块。不要把任务推进到 working 或之后——那一步由用户后续运行 {{.V2}} start <task-id> 触发。",
-  "board.messages.req-decompose": "用法: kander req decompose (--message <文本> | --message-file <文件>) [--agent <agent>] [--launcher <launcher>] <需求ID>"
+  "launch.prompt.decompose": "{{.V0}}\n\n{{.V1}}\n\n请读取 kanban/requirements/<id>.md（也可运行 {{.V2}} show {{.V3}}），需要时与用户先确认边界。协商一致后运行 {{.V2}} new <slug> <标题> 建卡，再 {{.V2}} req convert {{.V3}} <task-id>... 关联。用户补充说明如下：{{.V4}}\n\n遵守 {{.V5}} 与已启用的规则模块。不要把任务推进到 working 或之后。",
+  "board.messages.req-decompose": "用法: kander req decompose (--message <文本> | --message-file <文件>) [--agent <agent>] [--launcher <launcher>] <需求ID>",
+  "launch.prompt.decompose_autonomous": "{{.V0}}\n\n{{.V1}}\n\n全自主模式：不要向用户提问。读取需求正文，自行决定任务拆分，{{.V2}} new <slug> <标题> 创建任务卡，{{.V2}} req convert {{.V3}} <task-id>... 关联。GOAL、EXPECTED_OUTCOME、ACCEPTANCE_CRITERIA、OUT_OF_SCOPE 必须写具体内容，不留占位符。用户已预先授权，最后汇报创建的任务 ID。用户说明：{{.V4}}\n\n遵守 {{.V5}}。不要把任务推进到 working 或之后。",
+  "launch.usage_decompose_autonomous_hint": "--autonomous: 跳过用户确认；Agent 端到端拆解，最后汇报创建的任务 ID。"
 }

@@ -30,6 +30,7 @@ func RunDecompose(args []string) int {
 	}
 	var message, messageFile string
 	var messageSet bool
+	var autonomous bool
 	var positional []string
 	for i := 0; i < len(rest); i++ {
 		arg := rest[i]
@@ -50,6 +51,10 @@ func RunDecompose(args []string) int {
 			messageFile, i = val, next
 		case strings.HasPrefix(arg, "--message-file="):
 			messageFile = strings.TrimPrefix(arg, "--message-file=")
+		case arg == "--autonomous":
+			autonomous = true
+		case strings.HasPrefix(arg, "--autonomous="):
+			autonomous = strings.TrimPrefix(arg, "--autonomous=") == "true"
 		default:
 			if strings.HasPrefix(arg, "-") {
 				return usageDecomposeFail("board.unknown_option", arg)
@@ -79,6 +84,7 @@ func RunDecompose(args []string) int {
 		Message:     message,
 		MessageSet:  messageSet,
 		MessageFile: messageFile,
+		Autonomous:  autonomous,
 	}
 	if err := commandDecompose(decompArgs); err != nil {
 		return fail(err)
@@ -90,6 +96,7 @@ func usageDecompose(w io.Writer) {
 	fmt.Fprintln(w, t(
 		"launch.usage_kander_req_decompose_agent_launcher_message_text_message",
 	))
+	fmt.Fprintln(w, t("launch.usage_decompose_autonomous_hint"))
 }
 
 func usageDecomposeFail(id string, args ...any) int {
