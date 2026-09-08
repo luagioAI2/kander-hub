@@ -67,6 +67,35 @@ func TestAddRequirementRejectsDuplicateSlugPerDay(t *testing.T) {
 	}
 }
 
+func TestAddRequirementNormalizesAndValidatesSlug(t *testing.T) {
+	root := reqTestRoot(t)
+	// A camelCase slug is lowercased so the generated id matches reqIDRe.
+	path, err := AddRequirement(root, "sayHello", "Say hello", "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if filepath.Base(path) != todayPrefix()+"-sayhello-req.md" {
+		t.Fatalf("unexpected card file %s", filepath.Base(path))
+	}
+	reqs, problems, err := LoadRequirements(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(problems) != 0 {
+		t.Fatalf("problems: %v", problems)
+	}
+	if len(reqs) != 1 || reqs[0].ID != todayPrefix()+"-sayhello-req" {
+		t.Fatalf("want one normalized requirement, got %v", reqs)
+	}
+	// A slug that cannot be normalised to the allowed charset is rejected up
+	// front instead of producing a card that LoadRequirements flags.
+	for _, bad := range []string{"with space", "with/ slash", "UPPER!"} {
+		if _, err := AddRequirement(root, bad, "Bad", "src", ""); err == nil {
+			t.Fatalf("expected slug %q to be rejected", bad)
+		}
+	}
+}
+
 func TestConvertRequirementLinksAndDecomposes(t *testing.T) {
 	root := reqTestRoot(t)
 	if _, err := AddRequirement(root, "login-fix", "Fix login bug", "src", ""); err != nil {

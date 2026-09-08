@@ -289,6 +289,10 @@ func renderRequirementCard(req Requirement) string {
 
 // AddRequirement creates a new requirement card in the draft state and returns its path.
 func AddRequirement(root, slug, title, source, summary string) (string, error) {
+	slug = strings.ToLower(strings.TrimSpace(slug))
+	if !slugRe.MatchString(slug) {
+		return "", kanbanError("board.slug_may_contain_only_lowercase_ascii_letters_digits_and")
+	}
 	title = strings.TrimSpace(title)
 	if title == "" || strings.ContainsAny(title, "\n\r") {
 		return "", kanbanError("board.title_must_not_be_empty_or_contain_newlines")

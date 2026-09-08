@@ -2,6 +2,7 @@ package reqtui
 
 import (
 	"io"
+	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
@@ -119,7 +120,7 @@ func (m *Model) openNewForm() tea.Cmd {
 			return failureMsg(err.Error())
 		}
 		return formResult{
-			kind: "new", title: title, slug: slug,
+			kind: "new", title: title, slug: strings.ToLower(strings.TrimSpace(slug)),
 			body: summary, decompose: decompose,
 		}
 	})
