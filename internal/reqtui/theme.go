@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/lipgloss"
 	"github.com/mattn/go-runewidth"
+	"github.com/muesli/ansi"
 
 	"github.com/dualface/kander/internal/board"
 )
@@ -74,28 +75,13 @@ func paletteFor(themeName string) palette {
 	}
 }
 
+// ink returns a style that colors foreground text while leaving the terminal
+// background alone. Hard-coding a background per character (as earlier
+// iterations did) serialized a fresh ANSI background sequence on every styled
+// span, and on Windows terminals that leaked raw escape codes like "97;40m"
+// into the output. Keeping the background transparent avoids that entirely.
 func (p palette) ink(color lipgloss.Color) lipgloss.Style {
-	return lipgloss.NewStyle().Foreground(color).Background(p.Bg)
-}
-
-func (p palette) fillLine(width int) string {
-	if width < 1 {
-		return ""
-	}
-	return p.ink(p.Base).Render(strings.Repeat(" ", width))
-}
-
-func (p palette) fillBlock(content string, width, height int) string {
-	lines := strings.Split(content, "\n")
-	out := make([]string, height)
-	for i := 0; i < height; i++ {
-		line := ""
-		if i < len(lines) {
-			line = lines[i]
-		}
-		out[i] = padLineFill(line, width, p)
-	}
-	return strings.Join(out, "\n")
+	return lipgloss.NewStyle().Foreground(color)
 }
 
 // reqStyle maps a render cell tag to a lipgloss style, mirroring the tag set of
@@ -104,7 +90,7 @@ func (p palette) style(tag string) lipgloss.Style {
 	style := p.ink(p.Base)
 	switch {
 	case tag == "title" || tag == "footer":
-		return lipgloss.NewStyle().Foreground(p.ChromeFg).Background(p.ChromeBg).Bold(true)
+		return lipgloss.NewStyle().Foreground(p.ChromeFg).Bold(true)
 	case tag == "dim":
 		return p.ink(p.Dim)
 	case tag == "separator":
@@ -143,8 +129,10 @@ func (p palette) stateColor(state string) lipgloss.Color {
 }
 
 // displayWidth returns the terminal width of text, counting wide CJK runes.
+// ANSI escape sequences are skipped so a styled span measures as the visible
+// glyphs it represents, not its raw bytes.
 func displayWidth(text string) int {
-	return runewidth.StringWidth(text)
+	return ansi.PrintableRuneWidth(text)
 }
 
 func combining(r rune) bool {
@@ -211,17 +199,4 @@ func padText(text string, width int) string {
 		pad = 0
 	}
 	return clipped + strings.Repeat(" ", pad)
-}
-
-func padLineFill(content string, width int, p palette) string {
-	return p.ink(p.Base).Render(padText(content, width))
-}
-
-func (p palette) fillColumn(width, height int) string {
-	line := p.fillLine(width)
-	lines := make([]string, height)
-	for i := range lines {
-		lines[i] = line
-	}
-	return strings.Join(lines, "\n")
 }

@@ -112,7 +112,7 @@ func panelRow(p palette, state, content string, width int, focused bool) string 
 	if inner < 0 {
 		inner = 0
 	}
-	return border.Render(borderVertical) + padLineFill(content, inner, p) + border.Render(borderVertical)
+	return border.Render(borderVertical) + padText(content, inner) + border.Render(borderVertical)
 }
 
 func centerText(text string, width int) string {

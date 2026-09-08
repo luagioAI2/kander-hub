@@ -302,15 +302,17 @@ func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 
 func (m *Model) boardView() string {
 	p := paletteFor(m.theme)
-	// header row
-	header := p.style("title").Render(" " + m.t("reqtui.title") + "   ")
+	// header row: measure widths on plain text, then colorize so ANSI codes do
+	// not skew the display-width math.
+	left := " " + m.t("reqtui.title") + strings.Repeat(" ", 3)
 	right := m.t("reqtui.help")
+	leftWidth := displayWidth(left)
 	rightWidth := displayWidth(right)
-	gap := m.width - displayWidth(header) - rightWidth
-	if gap < 1 {
-		gap = 0
+	gap := m.width - leftWidth - rightWidth
+	if gap < 2 {
+		gap = 2
 	}
-	titleLine := header + strings.Repeat(" ", max(0, gap)) + right
+	titleLine := p.style("title").Render(clipText(left+strings.Repeat(" ", gap)+right, m.width))
 
 	// column panels
 	m.layout = layoutColumns(m.width, len(statusColumns))
@@ -320,7 +322,7 @@ func (m *Model) boardView() string {
 		focused := col.State == statusColumns[m.focus]
 		blocks = append(blocks, m.renderColumnPanel(p, col, columnHeight, focused))
 		if i < len(m.layout)-1 {
-			blocks = append(blocks, p.fillColumn(1, columnHeight))
+			blocks = append(blocks, " ")
 		}
 	}
 	board := lipgloss.JoinHorizontal(lipgloss.Top, blocks...)
@@ -328,7 +330,6 @@ func (m *Model) boardView() string {
 	var b strings.Builder
 	b.WriteString(titleLine)
 	b.WriteString("\n")
-	b.WriteString(p.fillLine(m.width))
 	b.WriteString("\n")
 	b.WriteString(board)
 
@@ -348,7 +349,7 @@ func (m *Model) boardView() string {
 		b.WriteString(p.style("dim").Render(m.statusMessage))
 	}
 
-	return p.fillBlock(b.String(), m.width, m.height)
+	return b.String()
 }
 
 func (m *Model) renderColumnPanel(p palette, col columnGeometry, bodyHeight int, focused bool) string {
