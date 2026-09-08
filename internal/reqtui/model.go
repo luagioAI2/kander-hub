@@ -8,6 +8,7 @@ package reqtui
 
 import (
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -52,6 +53,10 @@ type Model struct {
 
 	theme   string
 	layout  []columnGeometry
+
+	// last click position/at is used to recognize a double-click on a card.
+	lastClickX, lastClickY int
+	lastClickAt            time.Time
 
 	current view
 	detail  *board.Requirement
@@ -281,23 +286,79 @@ func (m *Model) columnLabel(status string) string {
 	return status
 }
 
-// handleMouse responds to terminal mouse events: clicking a column header or
-// body moves focus to that column, and clicking a row selects it.
+// Double-click window, in sync with the board TUI.
+const doubleClickWindow = 500 * time.Millisecond
+
+// bodyTop is the screen row where the column panels start: one title row,
+// then one blank row.
+const reqBodyTop = 2
+
+// cardLineHeight is the number of lines one collapsed requirement card takes
+// in a column: title, metadata, and one blank spacer.
+const reqCardLineHeight = 3
+
+// handleMouse responds to terminal mouse events. A left click focuses the
+// clicked column; clicking on a card also selects that card, and a second
+// click on the same card within the double-click window opens its detail.
+// Scrolling moves the cursor within the focused column.
 func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
 	if m.current != viewBoard {
 		return m, nil
 	}
-	if msg.Button != tea.MouseButtonLeft {
+	if msg.Action == tea.MouseActionPress {
+		if msg.Button == tea.MouseButtonWheelUp {
+			m.moveCursor(-1)
+			return m, nil
+		}
+		if msg.Button == tea.MouseButtonWheelDown {
+			m.moveCursor(1)
+			return m, nil
+		}
+	}
+	if msg.Action != tea.MouseActionPress || msg.Button != tea.MouseButtonLeft {
 		return m, nil
 	}
 	x, y := msg.X, msg.Y
-	// resolve the column from the saved layout (body starts after header rows)
-	colX := x
-	if state, ok := columnAt(m.layout, colX); ok {
-		m.focus = indexOf(statusColumns, state)
+	state, ok := columnAt(m.layout, x)
+	if !ok {
+		return m, nil
 	}
-	_ = y
+	list := m.columns[state]
+	focusIndex := indexOf(statusColumns, state)
+	if focusIndex >= 0 {
+		m.focus = focusIndex
+	}
+	// Determine whether the click landed on a card body.
+	ci := m.cardIndexAt(y)
+	if ci >= 0 && ci < len(list) {
+		if cur := m.cursor[state]; cur >= 0 && cur < len(list) {
+			// A same-position second click is the board TUI's double-click.
+			if ci == cur && m.lastClickAt != (time.Time{}) &&
+				time.Since(m.lastClickAt) <= doubleClickWindow &&
+				x == m.lastClickX && y == m.lastClickY {
+				m.lastClickAt = time.Time{}
+				m.openDetail()
+				return m, nil
+			}
+		}
+		m.cursor[state] = ci
+		m.lastClickX, m.lastClickY, m.lastClickAt = x, y, time.Now()
+	}
 	return m, nil
+}
+
+// cardIndexAt maps a screen row to the collapsed-card index in the clicked
+// column, or -1 when the row is outside any card body (column header, blank
+// spacer after the last card, or bottom border).
+func (m *Model) cardIndexAt(y int) int {
+	if y < reqBodyTop {
+		return -1
+	}
+	colRow := y - reqBodyTop // 0 = panel top border, 1 = first content row
+	if colRow < 1 {
+		return -1
+	}
+	return (colRow - 1) / reqCardLineHeight
 }
 
 func (m *Model) boardView() string {

@@ -200,3 +200,18 @@ func padText(text string, width int) string {
 	}
 	return clipped + strings.Repeat(" ", pad)
 }
+
+// padAnsi pads already-styled text to the given display width by appending
+// trailing spaces only. It never rewrites the payload, so the embedded ANSI
+// escapes survive untouched — critical because clipText/printableText treat
+// the ESC control byte as a character to blank, which would strip the escape
+// prefix and leak a raw "[33m" style code onto the screen. padAnsi is meant
+// for text that is already exactly the target width; the spaces are only a
+// safe fallback for narrow cells.
+func padAnsi(text string, width int) string {
+	pad := width - displayWidth(text)
+	if pad < 0 {
+		return text
+	}
+	return text + strings.Repeat(" ", pad)
+}
