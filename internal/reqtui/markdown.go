@@ -9,7 +9,8 @@ import (
 // terminal detail view reads cleanly without pulling a full glamour rendering
 // into this package. Full markdown (glamour) is available in the board TUI;
 // the requirements view only needs an approximation.
-func renderMarkdown(md string) string {
+func renderMarkdown(md, theme string) string {
+	p := paletteFor(theme)
 	var b strings.Builder
 	for _, raw := range strings.Split(md, "\n") {
 		line := strings.TrimRight(raw, " \t")
@@ -20,7 +21,7 @@ func renderMarkdown(md string) string {
 		trimmed := strings.TrimSpace(line)
 		switch {
 		case strings.HasPrefix(trimmed, "### "):
-			b.WriteString(columnHeader.Render(strings.TrimSpace(trimmed[4:])) + "\n")
+			b.WriteString(p.style("dim").Render(strings.TrimSpace(trimmed[4:])) + "\n")
 		case strings.HasPrefix(trimmed, "## "):
 			b.WriteString(columnHeader.Render(strings.TrimSpace(trimmed[3:])) + "\n")
 		case strings.HasPrefix(trimmed, "# "):

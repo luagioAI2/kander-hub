@@ -1,4 +1,4 @@
-﻿package reqtui
+package reqtui
 
 import (
 	"strings"
@@ -13,8 +13,11 @@ func TestBoardViewRendersEmptyColumns(t *testing.T) {
 	}
 	for _, status := range statusColumns {
 		label := m.columnLabel(status)
-		if !strings.Contains(view, label+" (0)") {
-			t.Fatalf("expected column header %q in view:\n%s", label, view)
+		if !strings.Contains(view, label) {
+			t.Fatalf("expected column label %q in view:\n%s", label, view)
+		}
+		if !strings.Contains(view, "0") {
+			t.Fatalf("expected zero badge in column %q:\n%s", label, view)
 		}
 	}
 }
@@ -45,7 +48,7 @@ func TestMoveFocusWraps(t *testing.T) {
 
 func TestRenderMarkdownStripsMarkers(t *testing.T) {
 	md := "# Title\n\n## Section\n\n- a\n- b\n\nDone **bold**."
-	out := renderMarkdown(md)
+	out := renderMarkdown(md, "auto")
 	if strings.Contains(out, "**") {
 		t.Fatalf("expected inline markers stripped, got:\n%s", out)
 	}

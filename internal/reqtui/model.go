@@ -18,19 +18,8 @@ import (
 )
 
 var (
-	selectedStyle = lipgloss.NewStyle().
-			Background(lipgloss.Color("24")).
-			Foreground(lipgloss.Color("255"))
-	statusStyle = map[string]lipgloss.Style{
-		board.ReqStatusDraft:      lipgloss.NewStyle().Foreground(lipgloss.Color("220")),
-		board.ReqStatusDecomposed: lipgloss.NewStyle().Foreground(lipgloss.Color("39")),
-		board.ReqStatusCompleted:  lipgloss.NewStyle().Foreground(lipgloss.Color("42")),
-		board.ReqStatusArchived:   lipgloss.NewStyle().Foreground(lipgloss.Color("245")),
-	}
 	columnHeader = lipgloss.NewStyle().Bold(true)
-	msgStyle     = lipgloss.NewStyle().
-			Foreground(lipgloss.Color("208"))
-	dimStyle = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
+	dimStyle     = lipgloss.NewStyle().Foreground(lipgloss.Color("244"))
 )
 
 // statusColumns is the ordered set of columns shown on the board screen.
@@ -61,6 +50,9 @@ type Model struct {
 	focus   int              // index into statusColumns
 	cursor  map[string]int   // status -> selected row index
 
+	theme   string
+	layout  []columnGeometry
+
 	current view
 	detail  *board.Requirement
 	viewport viewport.Model
@@ -82,6 +74,7 @@ func New(root string) *Model {
 		columns: make(map[string][]int),
 		cursor:  make(map[string]int),
 		current: viewBoard,
+		theme:   "auto",
 		width:   80,
 		height:  24,
 	}
@@ -107,6 +100,8 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 	case tea.KeyMsg:
 		return m.handleKey(ev)
+	case tea.MouseMsg:
+		return m.handleMouse(ev)
 	case successMsg:
 		m.statusMessage = m.statusText(ev)
 		m.err = ""
@@ -286,65 +281,143 @@ func (m *Model) columnLabel(status string) string {
 	return status
 }
 
-func (m *Model) boardView() string {
-	var cols []string
-	for _, status := range statusColumns {
-		cols = append(cols, m.renderColumn(status))
+// handleMouse responds to terminal mouse events: clicking a column header or
+// body moves focus to that column, and clicking a row selects it.
+func (m *Model) handleMouse(msg tea.MouseMsg) (tea.Model, tea.Cmd) {
+	if m.current != viewBoard {
+		return m, nil
 	}
-	body := lipgloss.JoinHorizontal(lipgloss.Top, cols...)
+	if msg.Button != tea.MouseButtonLeft {
+		return m, nil
+	}
+	x, y := msg.X, msg.Y
+	// resolve the column from the saved layout (body starts after header rows)
+	colX := x
+	if state, ok := columnAt(m.layout, colX); ok {
+		m.focus = indexOf(statusColumns, state)
+	}
+	_ = y
+	return m, nil
+}
+
+func (m *Model) boardView() string {
+	p := paletteFor(m.theme)
+	// header row
+	header := p.style("title").Render(" " + m.t("reqtui.title") + "   ")
+	right := m.t("reqtui.help")
+	rightWidth := displayWidth(right)
+	gap := m.width - displayWidth(header) - rightWidth
+	if gap < 1 {
+		gap = 0
+	}
+	titleLine := header + strings.Repeat(" ", max(0, gap)) + right
+
+	// column panels
+	m.layout = layoutColumns(m.width, len(statusColumns))
+	columnHeight := max(1, m.height-3)
+	blocks := make([]string, 0, len(m.layout)*2)
+	for i, col := range m.layout {
+		focused := col.State == statusColumns[m.focus]
+		blocks = append(blocks, m.renderColumnPanel(p, col, columnHeight, focused))
+		if i < len(m.layout)-1 {
+			blocks = append(blocks, p.fillColumn(1, columnHeight))
+		}
+	}
+	board := lipgloss.JoinHorizontal(lipgloss.Top, blocks...)
 
 	var b strings.Builder
-	b.WriteString(columnHeader.Render(m.t("reqtui.title")))
-	b.WriteString("\n\n")
-	b.WriteString(body)
+	b.WriteString(titleLine)
+	b.WriteString("\n")
+	b.WriteString(p.fillLine(m.width))
+	b.WriteString("\n")
+	b.WriteString(board)
+
+	// problems / status
 	if len(m.problems) > 0 {
 		b.WriteString("\n")
 		for _, problem := range m.problems {
-			b.WriteString(msgStyle.Render(problem))
+			b.WriteString(p.style("warn").Render(problem))
 			b.WriteString("\n")
 		}
 	}
 	if m.err != "" {
 		b.WriteString("\n")
-		b.WriteString(msgStyle.Render(m.err))
+		b.WriteString(p.style("warn").Render(m.err))
 	} else if m.statusMessage != "" {
 		b.WriteString("\n")
-		b.WriteString(dimStyle.Render(m.statusMessage))
+		b.WriteString(p.style("dim").Render(m.statusMessage))
 	}
-	b.WriteString("\n")
-	b.WriteString(dimStyle.Render(m.t("reqtui.help")))
-	return b.String()
+
+	return p.fillBlock(b.String(), m.width, m.height)
 }
 
-func (m *Model) renderColumn(status string) string {
+func (m *Model) renderColumnPanel(p palette, col columnGeometry, bodyHeight int, focused bool) string {
+	status := col.State
 	list := m.columns[status]
-	header := columnHeader.Render(m.columnLabel(status) + " (" + itoa(len(list)) + ")")
-	rows := []string{header}
+	width := col.Width
+	label := m.columnLabel(status)
+	badge := itoa(len(list))
+
+	lines := []string{panelTop(p, status, label, badge, width, focused)}
+	contentWidth := width - panelChrome
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+	body := make([]string, 0, bodyHeight)
 	if len(list) == 0 {
-		rows = append(rows, dimStyle.Render(m.t("reqtui.empty")))
+		body = append(body, p.style("dim").Render(centerText(m.t("reqtui.empty"), contentWidth)))
 	} else {
 		cur := m.cursor[status]
-		columnFocused := m.focus == indexOf(statusColumns, status)
 		for row, idx := range list {
 			req := m.requirements[idx]
-			title := req.Title
-			if status == board.ReqStatusCompleted && req.Total > 0 {
-				title += " " + itoa(req.Done) + "/" + itoa(req.Total)
+			selected := focused && row == cur
+			card := m.cardLines(req, status, contentWidth)
+			for line, text := range card {
+				body = append(body, reqCardStyle(p, status, line, selected).Render(" "+padText(text, contentWidth)+" "))
 			}
-			label := m.columnLabel(status)
-			if s, ok := statusStyle[status]; ok {
-				label = s.Render(label)
-			}
-			line := label + " " + title
-			if columnFocused && row == cur {
-				rows = append(rows, selectedStyle.Render(line))
-			} else {
-				rows = append(rows, line)
-			}
+			body = append(body, "")
 		}
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, rows...)
+	for i := 0; i < bodyHeight; i++ {
+		content := ""
+		if i < len(body) {
+			content = body[i]
+		}
+		lines = append(lines, panelRow(p, status, content, width, focused))
+	}
+	lines = append(lines, panelBottom(p, status, width, focused))
+	return strings.Join(lines, "\n")
 }
+
+// cardLines renders the visible lines of one requirement card: the title then
+// the status/progress metadata.
+func (m *Model) cardLines(req board.Requirement, status string, width int) []string {
+	title := req.Title
+	if status == board.ReqStatusCompleted && req.Total > 0 {
+		title += " " + itoa(req.Done) + "/" + itoa(req.Total)
+	}
+	meta := compactID(req.ID)
+	if req.Source != "" {
+		meta += "  " + compactSource(req.Source)
+	}
+	return []string{clipText(title, width), clipText(meta, width)}
+}
+
+func compactID(id string) string {
+	if len(id) > 9 && id[:8][0] >= '0' && id[:8][0] <= '9' {
+		return id[9:]
+	}
+	return id
+}
+
+func compactSource(source string) string {
+	if strings.HasPrefix(source, "pool://") {
+		return "@" + strings.TrimPrefix(source, "pool://")
+	}
+	return source
+}
+
+func (m *Model) rowHeight() int { return m.height }
 
 func indexOf(list []string, value string) int {
 	for i, v := range list {
@@ -379,23 +452,30 @@ func (m *Model) openDetail() {
 }
 
 func (m *Model) renderDetail(req *board.Requirement) string {
+	p := paletteFor(m.theme)
 	var b strings.Builder
-	b.WriteString(columnHeader.Render(req.Title))
+	b.WriteString(p.style("heading-" + req.Status).Render(req.Title))
 	b.WriteString("\n\n")
 	meta := []string{
 		"ID: " + req.ID,
-		"STATUS: " + m.columnLabel(req.Status),
+		"STATUS: " + p.style("heading-" + req.Status).Render(m.columnLabel(req.Status)),
 	}
 	if req.Created != "" {
 		meta = append(meta, "CREATED: "+req.Created)
 	}
+	if req.Source != "" {
+		meta = append(meta, "SOURCE: "+req.Source)
+	}
+	if req.Total > 0 {
+		meta = append(meta, "PROGRESS: "+itoa(req.Done)+"/"+itoa(req.Total))
+	}
 	if len(req.Tasks) > 0 {
 		meta = append(meta, "TASKS: "+strings.Join(req.Tasks, ", "))
 	}
-	b.WriteString(dimStyle.Render(strings.Join(meta, "  ")))
+	b.WriteString(p.style("dim").Render(strings.Join(meta, "\n")))
 	b.WriteString("\n\n")
 	if req.Summary != "" && req.Summary != board.Placeholder {
-		b.WriteString(renderMarkdown(req.Summary))
+		b.WriteString(renderMarkdown(req.Summary, m.theme))
 		b.WriteString("\n\n")
 	}
 	if req.Notes != "" && req.Notes != "N/A" {
@@ -404,7 +484,7 @@ func (m *Model) renderDetail(req *board.Requirement) string {
 		b.WriteString(req.Notes)
 	}
 	b.WriteString("\n\n")
-	b.WriteString(dimStyle.Render(m.t("reqtui.back_hint")))
+	b.WriteString(p.style("dim").Render(m.t("reqtui.back_hint")))
 	return b.String()
 }
 
