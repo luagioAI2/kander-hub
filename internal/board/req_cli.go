@@ -24,6 +24,7 @@ func reqUsage(w io.Writer, action string) {
 		"remove":   "board.messages.req-remove",
 		"complete": "board.messages.req-complete",
 		"decompose": "board.messages.req-decompose",
+		"tui":      "board.messages.req-tui",
 		"serve":    "board.messages.req-serve",
 	}
 	if id, ok := messages[action]; ok {
@@ -99,6 +100,12 @@ var RunWebServe func(args []string) int
 // dispatches into it to keep the package graph acyclic.
 var RunRequirementDecompose func(args []string) int
 
+// RunReqTUI is set by internal/reqtui on registration; it implements the
+// `kander req tui` action. The requirements TUI would otherwise import board,
+// creating a cycle with this file, so board exposes this hook instead and the
+// reqtui package installs the actual entry point.
+var RunReqTUI func(args []string) int
+
 // RequirementLinkedRef describes one linked task of a requirement; Missing
 // means the linked ID no longer exists on the board.
 type RequirementLinkedRef struct {
@@ -136,6 +143,12 @@ func RunRequirement(args []string) int {
 			return 2
 		}
 		return RunRequirementDecompose(rest)
+	case "tui":
+		if RunReqTUI == nil {
+			fmt.Fprintln(os.Stderr, t("board.req_unknown_action", action))
+			return 2
+		}
+		return RunReqTUI(rest)
 	case "serve":
 		if RunWebServe == nil {
 			fmt.Fprintln(os.Stderr, t("board.req_unknown_action", action))
