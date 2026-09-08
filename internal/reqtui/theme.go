@@ -215,3 +215,12 @@ func padAnsi(text string, width int) string {
 	}
 	return text + strings.Repeat(" ", pad)
 }
+
+// fillLine returns a line of width filled with the palette background, used to
+// keep column panels and the blank header row at a consistent height.
+func (p palette) fillLine(width int) string {
+	if width <= 0 {
+		return ""
+	}
+	return strings.Repeat(" ", width)
+}

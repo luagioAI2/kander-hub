@@ -58,6 +58,13 @@ type Model struct {
 	lastClickX, lastClickY int
 	lastClickAt            time.Time
 
+	// header search box: searching means a filter query is being typed, query
+	// filters which requirements are shown (empty shows all).
+	searching bool
+	query     string
+	// helpOpen renders the ? key-binding overlay on top of the board.
+	helpOpen bool
+
 	current view
 	detail  *board.Requirement
 	viewport viewport.Model
@@ -149,6 +156,17 @@ func (m *Model) handleKey(event tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (m *Model) handleBoardKey(event tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// The help overlay covers the board: any key closes it before it is
+	// reinterpreted as a board or detail command.
+	if m.helpOpen {
+		m.helpOpen = false
+		return m, nil
+	}
+	// While a search query is being typed, printable characters build the
+	// query and only a few keys leave the search box.
+	if m.searching {
+		return m.handleSearchKey(event)
+	}
 	switch event.String() {
 	case "q", "ctrl+c":
 		m.quit = true
@@ -163,6 +181,10 @@ func (m *Model) handleBoardKey(event tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.moveFocus(1)
 	case "shift+tab":
 		m.moveFocus(-1)
+	case "/":
+		m.searching = true
+	case "?":
+		m.helpOpen = true
 	case "d":
 		return m, m.openDecomposeForm()
 	case "n":
@@ -176,6 +198,31 @@ func (m *Model) handleBoardKey(event tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case "r":
 		m.reload()
 		m.statusMessage = m.t("reqtui.reloaded")
+	}
+	return m, nil
+}
+
+// handleSearchKey edits the header filter query. Random printable characters
+// narrow the shown requirements; enter accepts the query and esc clears it.
+func (m *Model) handleSearchKey(event tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch event.String() {
+	case "enter":
+		m.searching = false
+	case "esc":
+		m.query = ""
+		m.searching = false
+		m.reload()
+	case "backspace":
+		if m.query != "" {
+			runes := []rune(m.query)
+			m.query = string(runes[:len(runes)-1])
+			m.reload()
+		}
+	default:
+		if k := event.String(); len(k) == 1 && k[0] >= 0x20 && k[0] < 0x7f {
+			m.query += k
+			m.reload()
+		}
 	}
 	return m, nil
 }
@@ -249,7 +296,12 @@ func (m *Model) reload() {
 	for i := range statusColumns {
 		m.columns[statusColumns[i]] = nil
 	}
+	q := strings.ToLower(m.query)
 	for i, req := range reqs {
+		if q != "" && !strings.Contains(strings.ToLower(req.Title), q) &&
+			!strings.Contains(strings.ToLower(req.ID), q) {
+			continue
+		}
 		status := req.Status
 		if _, ok := m.columns[status]; !ok {
 			status = board.ReqStatusDraft
@@ -271,7 +323,151 @@ func (m *Model) View() string {
 	if m.current == viewDetail {
 		return m.detailView()
 	}
-	return m.boardView()
+	board := m.boardView()
+	if m.helpOpen {
+		return m.overlayHelp(board)
+	}
+	return board
+}
+
+// helpEntry is one line of the key-binding overlay: keys on the left,
+// description on the right.
+type helpEntry struct {
+	Keys string
+	Desc string
+}
+
+// renderHelpBody lays out the reqtui key table in two columns when the
+// terminal is wide enough, mirroring the board TUI's help overlay.
+func (m *Model) renderHelpBody(p palette) string {
+	groups := [][]helpEntry{
+		{
+			{"j k / ↑ ↓", m.t("reqtui.h_move")},
+			{"h l / ← →", m.t("reqtui.h_column")},
+			{"Enter", m.t("reqtui.h_detail")},
+			{"/", m.t("reqtui.h_search")},
+			{"n", m.t("reqtui.h_new")},
+			{"d", m.t("reqtui.h_decompose")},
+		},
+		{
+			{"c", m.t("reqtui.h_complete")},
+			{"a", m.t("reqtui.h_archive")},
+			{"r", m.t("reqtui.h_reload")},
+			{"?", m.t("reqtui.h_help")},
+			{"q", m.t("reqtui.h_quit")},
+			{m.t("reqtui.mouse"), m.t("reqtui.h_mouse")},
+		},
+	}
+	render := func(entries []helpEntry) string {
+		keyWidth := 0
+		for _, e := range entries {
+			if w := displayWidth(e.Keys); w > keyWidth {
+				keyWidth = w
+			}
+		}
+		lines := make([]string, 0, len(entries))
+		for _, e := range entries {
+			lines = append(lines,
+				p.style("title").Render(padText(e.Keys, keyWidth))+"  "+p.style("dim").Render(e.Desc))
+		}
+		return strings.Join(lines, "\n")
+	}
+	left, right := render(groups[0]), render(groups[1])
+	wide := lipgloss.JoinHorizontal(lipgloss.Top, left, "    ", right)
+	if displayWidth(strings.Split(wide, "\n")[0]) <= m.width-8 {
+		return wide
+	}
+	return left + "\n\n" + right
+}
+
+// overlayHelp composes the key-binding popup centered over the board screen.
+func (m *Model) overlayHelp(board string) string {
+	p := paletteFor(m.theme)
+	body := m.renderHelpBody(p)
+	lines := strings.Split(body, "\n")
+	inner := 0
+	for _, line := range lines {
+		if w := displayWidth(line); w > inner {
+			inner = w
+		}
+	}
+	hint := m.t("reqtui.close_hint")
+	if w := displayWidth(hint); w > inner {
+		inner = w
+	}
+	title := m.t("reqtui.help_title")
+	if w := displayWidth(title); w > inner {
+		inner = w
+	}
+
+	// center the popup box on the board area
+	boxW, boxH := inner+4, len(lines)+5
+	if boxW > m.width-2 {
+		boxW = m.width - 2
+	}
+	if boxH > m.height-2 {
+		boxH = m.height - 2
+	}
+	offX := (m.width - boxW) / 2
+	if offX < 0 {
+		offX = 0
+	}
+	offY := (m.height - boxH) / 2
+	if offY < 0 {
+		offY = 0
+	}
+
+	// build the popup content: title, separator, body, hint
+	sep := p.style("separator").Render(strings.Repeat("─", inner))
+	content := strings.Join([]string{
+		p.style("title").Render(padText(title, inner)),
+		sep,
+		padBlock(body, inner, len(lines), p),
+		p.style("dim").Render(padText(hint, inner)),
+	}, "\n")
+
+	// frame the popup with a rounded border
+	frame := []string{
+		p.style("popup-edge").Render(borderTopLeft+strings.Repeat(borderHorizontal, boxW-2)+borderTopRight),
+	}
+	for _, line := range strings.Split(content, "\n") {
+		frame = append(frame, p.style("popup-edge").Render(borderVertical)+padAnsi(line, boxW-2)+p.style("popup-edge").Render(borderVertical))
+	}
+	frame = append(frame, p.style("popup-edge").Render(borderBottomLeft+strings.Repeat(borderHorizontal, boxW-2)+borderBottomRight))
+
+	// composite the frame onto the board at (offX, offY)
+	boardLines := strings.Split(board, "\n")
+	for row, popupLine := range frame {
+		y := offY + row
+		if y >= len(boardLines) {
+			break
+		}
+		boardLines[y] = overlayLine(boardLines[y], popupLine, offX, boxW)
+	}
+	return strings.Join(boardLines, "\n")
+}
+
+// overlayLine replaces width columns of base starting at x with the popup
+// line, preserving the rest of the underlying row.
+func overlayLine(base, popup string, x, width int) string {
+	runes := []rune(base)
+	if len(runes) < x {
+		// pad the underlying row up to the popup's left edge
+		pad := strings.Repeat(" ", x-len(runes))
+		runes = append(runes, []rune(pad)...)
+	}
+	end := x + width
+	if end > len(runes) {
+		end = len(runes)
+	}
+	return string(runes[:x]) + popup + string(runes[end:])
+}
+
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 func (m *Model) columnLabel(status string) string {
@@ -363,19 +559,28 @@ func (m *Model) cardIndexAt(y int) int {
 
 func (m *Model) boardView() string {
 	p := paletteFor(m.theme)
-	// header row: measure widths on plain text, then colorize so ANSI codes do
-	// not skew the display-width math.
-	left := " " + m.t("reqtui.title") + strings.Repeat(" ", 3)
-	right := m.t("reqtui.help")
+	// header row: title + search box on the left, generation hint removed (the
+	// pool has no generated-at stamp). Width math runs on plain text first so
+	// ANSI codes do not skew the visible widths, then the line is colorized.
+	left := " " + m.t("reqtui.title") + "  " + m.t("reqtui.search") + ": " + m.query
+	if m.searching {
+		left += "▏"
+	}
 	leftWidth := displayWidth(left)
+	right := m.t("reqtui.status_help")
 	rightWidth := displayWidth(right)
+	if leftWidth+rightWidth > m.width {
+		right = clipText(right, max(0, m.width-leftWidth))
+		rightWidth = displayWidth(right)
+	}
 	gap := m.width - leftWidth - rightWidth
-	if gap < 2 {
-		gap = 2
+	if gap < 0 {
+		gap = 0
 	}
 	titleLine := p.style("title").Render(clipText(left+strings.Repeat(" ", gap)+right, m.width))
 
-	// column panels
+	// column panels occupy everything between the title row, the blank row and
+	// the bottom status bar.
 	m.layout = layoutColumns(m.width, len(statusColumns))
 	columnHeight := max(1, m.height-3)
 	blocks := make([]string, 0, len(m.layout)*2)
@@ -388,29 +593,89 @@ func (m *Model) boardView() string {
 	}
 	board := lipgloss.JoinHorizontal(lipgloss.Top, blocks...)
 
-	var b strings.Builder
-	b.WriteString(titleLine)
-	b.WriteString("\n")
-	b.WriteString("\n")
-	b.WriteString(board)
+	// bottom status bar carries a transient notice when set, otherwise the
+	// segmented summary on the left and the quick help on the right.
+	return lipgloss.JoinVertical(lipgloss.Left,
+		titleLine,
+		p.fillLine(m.width),
+		padBlock(board, m.width, columnHeight, p),
+		m.renderStatusBar(p, m.width),
+	)
+}
 
-	// problems / status
-	if len(m.problems) > 0 {
-		b.WriteString("\n")
-		for _, problem := range m.problems {
-			b.WriteString(p.style("warn").Render(problem))
-			b.WriteString("\n")
+// padBlock pads a rendered line block to exactly width x height using blank
+// fill lines so every column panel reaches the same bottom edge.
+func padBlock(block string, width, height int, p palette) string {
+	lines := strings.Split(block, "\n")
+	for len(lines) < height {
+		lines = append(lines, p.fillLine(width))
+	}
+	if len(lines) > height {
+		lines = lines[:height]
+	}
+	out := make([]string, 0, len(lines))
+	for _, line := range lines {
+		out = append(out, padAnsi(line, width))
+	}
+	return strings.Join(out, "\n")
+}
+
+// renderStatusBar draws the single bottom line: the transient notice
+// (problems / errors / status messages) or, when none is set, the column and
+// card counts on the left and the ?-help / quit hint on the right.
+func (m *Model) renderStatusBar(p palette, w int) string {
+	if notice := m.transientNotice(); notice != "" {
+		tag := "footer"
+		if m.err != "" || len(m.problems) > 0 {
+			tag = "warn"
 		}
+		return p.style(tag).Render(padAnsi(" "+clipText(notice, max(0, w-1)), w))
+	}
+	segments := []string{
+		m.t("reqtui.pool_unit"),
+		itoa(m.visibleCount()) + " " + m.t("reqtui.card_unit"),
+		itoa(m.countStatus(board.ReqStatusDraft)) + "/" +
+			itoa(m.countStatus(board.ReqStatusDecomposed)) + "/" +
+			itoa(m.countStatus(board.ReqStatusCompleted)) + " " + m.t("reqtui.progress_unit"),
+	}
+	left := " " + strings.Join(segments, "  "+p.style("separator").Render(m.t("reqtui.vbar"))+"  ")
+	if m.searching {
+		left += "  " + m.t("reqtui.searching")
+	}
+	right := m.t("reqtui.status_help") + " "
+	innerWidth := displayWidth(left) + displayWidth(right)
+	if w-1 <= innerWidth {
+		return p.style("footer").Render(padAnsi(clipText(left, max(0, w-1)), w))
+	}
+	gap := w - innerWidth
+	return p.style("footer").Render(padAnsi(left+strings.Repeat(" ", gap)+right, w))
+}
+
+// transientNotice returns the current bottom-bar message, or "" when the
+// summary segments should be shown instead.
+func (m *Model) transientNotice() string {
+	if len(m.problems) > 0 {
+		return strings.Join(m.problems, " · ")
 	}
 	if m.err != "" {
-		b.WriteString("\n")
-		b.WriteString(p.style("warn").Render(m.err))
-	} else if m.statusMessage != "" {
-		b.WriteString("\n")
-		b.WriteString(p.style("dim").Render(m.statusMessage))
+		return m.err
 	}
+	if m.statusMessage != "" {
+		return m.statusMessage
+	}
+	return ""
+}
 
-	return b.String()
+func (m *Model) visibleCount() int {
+	n := 0
+	for _, list := range m.columns {
+		n += len(list)
+	}
+	return n
+}
+
+func (m *Model) countStatus(status string) int {
+	return len(m.columns[status])
 }
 
 func (m *Model) renderColumnPanel(p palette, col columnGeometry, bodyHeight int, focused bool) string {
