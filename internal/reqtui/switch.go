@@ -12,10 +12,12 @@ import (
 // switchMsg reports the outcome of a window switch attempt for the status bar.
 type switchMsg struct{ text string }
 
-// decomposeWindow extracts the tmux window address recorded on the focused
-// requirement by the last decompose launch. The stored value is
+// decomposeWindow extracts the tmux server/session address recorded on the
+// focused requirement by the last decompose launch. The stored value is
 // "<launcher>:<session>:<window>:<pane>" (or "herdr:<tab>:<pane>"); only tmux
-// addresses are switchable from here.
+// and tmux-session addresses are switchable from here. In tmux-session mode
+// the session name doubles as the tmux server name (kander uses one project
+// session per server), so the same value selects the server with `-L`.
 func decomposeWindow(stored string) (session, window string, ok bool) {
 	if stored == "" || !strings.HasPrefix(stored, "tmux") {
 		return "", "", false
@@ -31,9 +33,12 @@ func decomposeWindow(stored string) (session, window string, ok bool) {
 	return "", "", false
 }
 
-// switchToDecompose switches the terminal to the decompose tmux window of the
-// focused requirement. Inside tmux it runs switch-client, which suspends this
-// TUI via tea.Exec; outside tmux it reports the manual command instead.
+// switchToDecompose jumps the terminal into the decompose tmux window of the
+// focused requirement. The window lives on a kander project tmux server whose
+// name equals the project session, so the reliable command is
+// `tmux -L <session> attach-session -t <session>:<window>` — it works from
+// inside or outside tmux and across servers. Inside an existing tmux session
+// this nests, which is the standard kander flow for following an agent.
 func (m *Model) switchToDecompose() tea.Cmd {
 	req := m.currentRequirement()
 	if req == nil {
@@ -49,13 +54,16 @@ func (m *Model) switchToDecompose() tea.Cmd {
 	if window != "" {
 		target = session + ":" + window
 	}
-	if os.Getenv("TMUX") == "" {
-		return func() tea.Msg {
-			return switchMsg{m.t("reqtui.switch_outside_tmux", "tmux switch-client -t "+target)}
-		}
+	// The -L server name equals the session in tmux-session mode; when the
+	// launcher is plain "tmux" (user's current server) omit -L so we stay on
+	// the same server and switch-client applies.
+	args := []string{}
+	if strings.HasPrefix(req.Window, "tmux-session:") {
+		args = []string{"-L", session}
 	}
+	args = append(args, "attach-session", "-t", target)
 	return tea.Exec(&execCommand{run: func() error {
-		cmd := exec.Command("tmux", "switch-client", "-t", target)
+		cmd := exec.Command("tmux", args...)
 		cmd.Stdin = os.Stdin
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
