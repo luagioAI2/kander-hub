@@ -1,14 +1,22 @@
 package reqtui
 
 import (
+	"errors"
 	"io"
+	"regexp"
 	"strings"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/huh"
 
 	"github.com/dualface/kander/internal/board"
 )
+
+// newSlugRe mirrors board's requirement slug rule (lowercase ASCII letters,
+// digits, and hyphens between segments). Used to give immediate in-form
+// feedback instead of failing silently on submit.
+var newSlugRe = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // successMsg reports a completed write so Update can reload the pool.
 type successMsg struct {
@@ -95,6 +103,25 @@ type formResult struct {
 	reqID string
 }
 
+// validateNewSlug is an in-form validator for the new-requirement slug field.
+// It rejects an empty / ill-formed slug and one that would collide with an
+// existing requirement id under today's date, so the user sees the problem
+// while filling in the form instead of only discovering after submit that no
+// card was created.
+func (m *Model) validateNewSlug(v string) error {
+	v = strings.ToLower(strings.TrimSpace(v))
+	if !newSlugRe.MatchString(v) {
+		return errors.New(m.t("board.slug_may_contain_only_lowercase_ascii_letters_digits_and"))
+	}
+	id := time.Now().Format("20060102") + "-" + v + "-req"
+	for _, r := range m.requirements {
+		if r.ID == id {
+			return errors.New(m.t("reqtui.new_slug_taken", v))
+		}
+	}
+	return nil
+}
+
 // openNewForm suspends the TUI, collects a new-requirement form (title /
 // slug / summary / decompose-now?), and reports the values through formResult.
 func (m *Model) openNewForm() tea.Cmd {
@@ -109,7 +136,8 @@ func (m *Model) openNewForm() tea.Cmd {
 			huh.NewInput().
 				Title(m.t("reqtui.new_slug")).
 				Prompt("> ").
-				Value(&slug),
+				Value(&slug).
+				Validate(m.validateNewSlug),
 			huh.NewText().
 				Title(m.t("reqtui.new_summary")).
 				Value(&summary),

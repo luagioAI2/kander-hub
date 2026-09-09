@@ -882,6 +882,7 @@
   "reqtui.new_slug": "Requirement slug (used in the ID)",
   "reqtui.new_summary": "Requirement summary",
   "reqtui.new_decompose": "Decompose with the AI agent right after creating?",
+  "reqtui.new_slug_taken": "a requirement with slug {{.V0}} already exists under today's date; use a different slug",
   "reqtui.decompose_message_title": "Optional message for the decompose agent",
   "reqtui.decompose_attach": "Attachment paths (screenshot / document / directory, comma-separated, optional)",
   "reqtui.decompose_attach_hint": "Paths are stored verbatim in the card's ATTACHMENTS field and handed to the agent with the requirement text",

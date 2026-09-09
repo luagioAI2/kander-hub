@@ -882,6 +882,7 @@
   "reqtui.new_slug": "要件 slug（ID に使用）",
   "reqtui.new_summary": "要件の概要",
   "reqtui.new_decompose": "作成後すぐに AI Agent で分解しますか？",
+  "reqtui.new_slug_taken": "今日の日付でスラッグ {{.V0}} の要件は既に存在します。別のスラッグを使用してください",
   "reqtui.decompose_message_title": "分解 Agent への追記（任意）",
   "reqtui.decompose_attach": "添付パス（スクリーンショット / 資料 / ディレクトリ、カンマ区切り、任意）",
   "reqtui.decompose_attach_hint": "パスはカードの ATTACHMENTS フィールドにそのまま記録され、要件本文と共に Agent に渡されます",

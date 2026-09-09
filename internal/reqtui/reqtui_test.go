@@ -3,6 +3,8 @@ package reqtui
 import (
 	"strings"
 	"testing"
+
+	"github.com/dualface/kander/internal/board"
 )
 
 func TestBoardViewRendersEmptyColumns(t *testing.T) {
@@ -75,6 +77,32 @@ func TestDecomposeWindow(t *testing.T) {
 		if ok != c.ok || sess != c.sess || window != c.window {
 			t.Fatalf("decomposeWindow(%q) = (%q,%q,%v), want (%q,%q,%v)", c.in, sess, window, ok, c.sess, c.window, c.ok)
 		}
+	}
+}
+
+func TestValidateNewSlug(t *testing.T) {
+	root := t.TempDir()
+	m := New(root)
+	// Seed one requirement under today's slug so a duplicate is detectable.
+	if _, err := board.AddRequirement(root, "x-one", "first", "N/A", "body"); err != nil {
+		t.Fatal(err)
+	}
+	m.reload()
+
+	// A brand-new, well-formed slug is accepted.
+	if err := m.validateNewSlug("fresh-slug"); err != nil {
+		t.Fatalf("validateNewSlug(fresh-slug) = %v, want nil", err)
+	}
+	// Ill-formed slugs are rejected. (Note: an uppercase slug is normalized
+	// to lowercase by the form, matching AddRequirement, so it is accepted.)
+	for _, bad := range []string{"", "has Space", "中文", "x y"} {
+		if err := m.validateNewSlug(bad); err == nil {
+			t.Fatalf("validateNewSlug(%q) = nil, want error", bad)
+		}
+	}
+	// A slug already used to build today's requirement id is rejected.
+	if err := m.validateNewSlug("x-one"); err == nil {
+		t.Fatal("validateNewSlug(x-one) = nil, want duplicate error")
 	}
 }
 

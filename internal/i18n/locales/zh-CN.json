@@ -882,6 +882,7 @@
   "reqtui.new_slug": "需求 slug（用于 ID）",
   "reqtui.new_summary": "需求摘要",
   "reqtui.new_decompose": "创建后立即用 AI Agent 拆解？",
+  "reqtui.new_slug_taken": "今天已存在 slug 为 {{.V0}} 的需求；请换一个 slug",
   "reqtui.decompose_message_title": "给拆解 Agent 的补充说明（可选）",
   "reqtui.decompose_attach": "附件路径（截图 / 文档 / 目录，逗号分隔，可留空）",
   "reqtui.decompose_attach_hint": "路径原样写入需求卡片 ATTACHMENTS 字段，拆解时随需求全文一起交给 Agent",
