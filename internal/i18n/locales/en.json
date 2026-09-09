@@ -890,7 +890,6 @@
   "reqtui.decompose_launched": "decompose agent launched for {{.V0}}; switch to the launcher window",
   "reqtui.decompose_window_hint": "decompose window {{.V0}} is up; press w to switch",
   "reqtui.switch_unavailable": "no switchable tmux window for the focused requirement",
-  "reqtui.switch_outside_tmux": "not inside tmux; run manually: {{.V0}}",
   "reqtui.switch_failed": "window switch failed",
   "reqtui.switch_done": "switched to {{.V0}}",
   "reqtui.created": "created {{.V0}}",

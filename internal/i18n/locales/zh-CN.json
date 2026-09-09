@@ -890,7 +890,6 @@
   "reqtui.decompose_launched": "已为 {{.V0}} 启动拆解 Agent；请切换到启动器窗口",
   "reqtui.decompose_window_hint": "拆解窗口 {{.V0}} 已启动，按 w 切换",
   "reqtui.switch_unavailable": "当前需求没有可切换的 tmux 窗口",
-  "reqtui.switch_outside_tmux": "不在 tmux 内，请手动执行：{{.V0}}",
   "reqtui.switch_failed": "切换窗口失败",
   "reqtui.switch_done": "已切换到 {{.V0}}",
   "reqtui.created": "已创建 {{.V0}}",

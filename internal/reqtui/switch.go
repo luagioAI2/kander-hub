@@ -36,9 +36,10 @@ func decomposeWindow(stored string) (session, window string, ok bool) {
 }
 
 // switchToDecompose jumps the terminal into the decompose tmux window of the
-// focused requirement. The window lives on the same tmux server this TUI runs
-// inside, so switch-client re-targets the current client in place. Outside
-// tmux there is no client to redirect; report the attach command instead.
+// focused requirement. Inside tmux it re-targets the current client in place
+// with switch-client; outside tmux it runs tmux attach-session, which takes
+// over the running terminal so the user lands straight in the dsh TUI. The
+// TUI is suspended by tea.Exec until the user detaches and returns.
 func (m *Model) switchToDecompose() tea.Cmd {
 	req := m.currentRequirement()
 	if req == nil {
@@ -54,12 +55,11 @@ func (m *Model) switchToDecompose() tea.Cmd {
 	if window != "" {
 		target = session + ":" + window
 	}
-	if os.Getenv("TMUX") == "" {
-		return func() tea.Msg {
-			return switchMsg{m.t("reqtui.switch_outside_tmux", "tmux attach-session -t "+target)}
-		}
-	}
+	inTmux := os.Getenv("TMUX") != ""
 	args := []string{"switch-client", "-t", target}
+	if !inTmux {
+		args = []string{"attach-session", "-t", target}
+	}
 	return tea.Exec(&execCommand{run: func() error {
 		cmd := exec.Command("tmux", args...)
 		cmd.Stdin = os.Stdin

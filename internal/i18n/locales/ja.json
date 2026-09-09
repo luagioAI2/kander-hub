@@ -890,7 +890,6 @@
   "reqtui.decompose_launched": "{{.V0}} の分解 Agent を起動しました。launcher ウィンドウを確認してください",
   "reqtui.decompose_window_hint": "分解ウィンドウ {{.V0}} が起動しました。w で切替",
   "reqtui.switch_unavailable": "選択中の要件に切替可能な tmux ウィンドウがありません",
-  "reqtui.switch_outside_tmux": "tmux 外です。手動で実行してください：{{.V0}}",
   "reqtui.switch_failed": "ウィンドウ切替に失敗しました",
   "reqtui.switch_done": "{{.V0}} に切替しました",
   "reqtui.created": "{{.V0}} を作成しました",
