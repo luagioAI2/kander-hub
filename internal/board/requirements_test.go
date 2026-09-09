@@ -263,3 +263,44 @@ func TestUnlinkRequirementTargets(t *testing.T) {
 		t.Fatalf("status = %s, want decomposed kept", reqs[0].Status)
 	}
 }
+
+func TestRequirementAttachmentsAndWindow(t *testing.T) {
+	root := reqTestRoot(t)
+	if _, err := AddRequirement(root, "login-fix", "Fix login bug", "src", ""); err != nil {
+		t.Fatal(err)
+	}
+	id := todayPrefix() + "-login-fix-req"
+	if _, err := SetRequirementAttachments(root, id, []string{"./shots/before.png", "  ./docs/spec.md  ", ""}); err != nil {
+		t.Fatal(err)
+	}
+	reqs, _, err := LoadRequirements(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 1 {
+		t.Fatalf("want 1 requirement, got %d", len(reqs))
+	}
+	got := reqs[0].Attach
+	if len(got) != 2 || got[0] != "./shots/before.png" || got[1] != "./docs/spec.md" {
+		t.Fatalf("attach = %v", got)
+	}
+	if raw := ParseRequirementAttachments(readReqCard(t, root, id)); len(raw) != 2 {
+		t.Fatalf("ParseRequirementAttachments = %v", raw)
+	}
+	if _, err := SetRequirementAttachments(root, id, nil); err != nil {
+		t.Fatal(err)
+	}
+	reqs, _, _ = LoadRequirements(root)
+	if len(reqs[0].Attach) != 0 {
+		t.Fatalf("expected cleared attach, got %v", reqs[0].Attach)
+	}
+}
+
+func readReqCard(t *testing.T, root, id string) string {
+	t.Helper()
+	data, err := os.ReadFile(filepath.Join(root, RequirementsDir, id+".md"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(data)
+}

@@ -51,8 +51,8 @@ type Model struct {
 	focus   int              // index into statusColumns
 	cursor  map[string]int   // status -> selected row index
 
-	theme   string
-	layout  []columnGeometry
+	theme  string
+	layout []columnGeometry
 
 	// last click position/at is used to recognize a double-click on a card.
 	lastClickX, lastClickY int
@@ -65,8 +65,8 @@ type Model struct {
 	// helpOpen renders the ? key-binding overlay on top of the board.
 	helpOpen bool
 
-	current view
-	detail  *board.Requirement
+	current  view
+	detail   *board.Requirement
 	viewport viewport.Model
 
 	statusMessage string
@@ -118,12 +118,23 @@ func (m *Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.statusMessage = m.statusText(ev)
 		m.err = ""
 		m.reload()
+		if ev.op == "decompose" {
+			// reload() refreshed the pool, so the WINDOW field the launch
+			// pipeline just wrote is visible here.
+			if req := m.currentRequirement(); req != nil && req.Window != "" {
+				m.statusMessage = m.t("reqtui.decompose_window_hint", req.Window)
+			}
+		}
 		if ev.op == "new" && m.autoDecomposeSlug != "" {
 			return m, m.launchDecomposeOn(findBySlug(m.requirements, m.autoDecomposeSlug))
 		}
 		return m, nil
 	case failureMsg:
 		m.err = string(ev)
+		return m, nil
+	case switchMsg:
+		m.statusMessage = ev.text
+		m.err = ""
 		return m, nil
 	case formResult:
 		switch ev.kind {
@@ -187,6 +198,8 @@ func (m *Model) handleBoardKey(event tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.helpOpen = true
 	case "d":
 		return m, m.openDecomposeForm()
+	case "w":
+		return m, m.switchToDecompose()
 	case "n":
 		return m, m.openNewForm()
 	case "c":
@@ -348,6 +361,7 @@ func (m *Model) renderHelpBody(p palette) string {
 			{"/", m.t("reqtui.h_search")},
 			{"n", m.t("reqtui.h_new")},
 			{"d", m.t("reqtui.h_decompose")},
+			{"w", m.t("reqtui.h_switch")},
 		},
 		{
 			{"c", m.t("reqtui.h_complete")},
@@ -428,7 +442,7 @@ func (m *Model) overlayHelp(board string) string {
 
 	// frame the popup with a rounded border
 	frame := []string{
-		p.style("popup-edge").Render(borderTopLeft+strings.Repeat(borderHorizontal, boxW-2)+borderTopRight),
+		p.style("popup-edge").Render(borderTopLeft + strings.Repeat(borderHorizontal, boxW-2) + borderTopRight),
 	}
 	for _, line := range strings.Split(content, "\n") {
 		frame = append(frame, p.style("popup-edge").Render(borderVertical)+padAnsi(line, boxW-2)+p.style("popup-edge").Render(borderVertical))
@@ -785,7 +799,7 @@ func (m *Model) renderDetail(req *board.Requirement) string {
 	b.WriteString("\n\n")
 	meta := []string{
 		"ID: " + req.ID,
-		"STATUS: " + p.style("heading-" + req.Status).Render(m.columnLabel(req.Status)),
+		"STATUS: " + p.style("heading-"+req.Status).Render(m.columnLabel(req.Status)),
 	}
 	if req.Created != "" {
 		meta = append(meta, "CREATED: "+req.Created)
@@ -798,6 +812,9 @@ func (m *Model) renderDetail(req *board.Requirement) string {
 	}
 	if len(req.Tasks) > 0 {
 		meta = append(meta, "TASKS: "+strings.Join(req.Tasks, ", "))
+	}
+	if len(req.Attach) > 0 {
+		meta = append(meta, m.t("reqtui.attach_label")+":\n  "+strings.Join(req.Attach, "\n  "))
 	}
 	b.WriteString(p.style("dim").Render(strings.Join(meta, "\n")))
 	b.WriteString("\n\n")

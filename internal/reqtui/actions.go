@@ -88,6 +88,9 @@ type formResult struct {
 	decompose bool
 	// decompose message or summary body
 	body string
+	// attachment paths collected by the decompose form, written to the card
+	// before the agent launches
+	attach []string
 	// the requirement id a decompose form targeted
 	reqID string
 }
@@ -135,9 +138,6 @@ func (m *Model) createRequirement(res formResult) tea.Cmd {
 			return failureMsg(err.Error())
 		}
 		createdID = id
-		// The model reload reads the pool after this message; the auto-decompose
-		// chain is keyed by the slug the user typed, so the created id here only
-		// feeds the status line.
 		return successMsg{op: "new", id: createdID}
 	}
 }
@@ -152,29 +152,52 @@ func (m *Model) launchDecomposeOn(req *board.Requirement) tea.Cmd {
 		m.err = m.t("reqtui.decompose_unavailable")
 		return nil
 	}
-	var message string
+	var message, attachInput string
 	form := huh.NewForm(
 		huh.NewGroup(
 			huh.NewText().
 				Title(m.t("reqtui.decompose_message_title")).
 				Value(&message),
+			huh.NewInput().
+				Title(m.t("reqtui.decompose_attach")).
+				Description(m.t("reqtui.decompose_attach_hint")).
+				Prompt("> ").
+				Value(&attachInput),
 		),
 	).WithShowHelp(true)
 	return tea.Exec(&execCommand{run: form.Run}, func(err error) tea.Msg {
 		if err != nil {
 			return failureMsg(err.Error())
 		}
-		return formResult{kind: "decompose", reqID: req.ID, body: message}
+		return formResult{kind: "decompose", reqID: req.ID, body: message, attach: splitAttachInput(attachInput)}
 	})
 }
 
-// finishDecompose launches the agent via the board hook. The launch opens its
-// own launcher window (tmux pane, herdr tab or console window) and returns
-// when the session is up; the user switches over to that window to follow or
-// steer the agent.
+// splitAttachInput splits a comma- or semicolon-separated attachment path
+// list from the decompose form into individual trimmed paths.
+func splitAttachInput(raw string) []string {
+	var out []string
+	for _, part := range strings.FieldsFunc(raw, func(r rune) bool { return r == ',' || r == ';' || r == '\n' }) {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// finishDecompose launches the agent via the board hook. Attachments typed in
+// the form are persisted on the card first so the launch prompt picks them
+// up. The launch opens its own launcher window (tmux pane, herdr tab or
+// console window) and returns when the session is up; the status line then
+// offers the w key to switch to the window.
 func (m *Model) finishDecompose(res formResult) tea.Cmd {
-	id, message := res.reqID, res.body
+	id, message, attach := res.reqID, res.body, res.attach
 	return func() tea.Msg {
+		if len(attach) > 0 {
+			if _, err := board.SetRequirementAttachments(m.root, id, attach); err != nil {
+				return failureMsg(err.Error())
+			}
+		}
 		args := []string{"--message", message, id}
 		if rc := board.RunRequirementDecompose(args); rc != 0 {
 			return failureMsg(m.t("reqtui.decompose_failed", id))

@@ -35,6 +35,13 @@ const (
 	FieldReqDocs      = "DOCS"
 	FieldReqTasks     = "TASKS"
 	FieldReqGroups    = "TASK_GROUPS"
+	// FieldReqAttach records user-supplied attachment paths (files or
+	// directories such as screenshots or spec documents), comma-separated.
+	// The paths are stored verbatim; the pool never copies the targets.
+	FieldReqAttach = "ATTACHMENTS"
+	// FieldReqWindow mirrors board.FieldWindow so the requirement card can
+	// record the launcher window of its decompose session for quick switch.
+	FieldReqWindow = "WINDOW"
 
 	// FieldReqSession mirrors board.FieldSession for requirement cards so the
 	// decompose agent's identity can be persisted next to the requirement and
@@ -79,6 +86,11 @@ type Requirement struct {
 	// LastDecompose is the timestamp of the last decompose launch; it is set
 	// by the launch pipeline after a successful decompose run.
 	LastDecompose string
+	// Attach lists user-supplied attachment paths stored verbatim on the card.
+	Attach []string
+	// Window is the launcher window address of the last decompose session,
+	// written by the launch pipeline (tmux:session:window:pane or herdr:tab:pane).
+	Window string
 }
 
 func requirementsRoot(root string) string {
@@ -129,6 +141,8 @@ func parseRequirement(id, path, text string) Requirement {
 		Groups:        splitIDList(MetadataFrom(text, FieldReqGroups)),
 		Session:       MetadataFrom(text, FieldReqSession),
 		LastDecompose: MetadataFrom(text, FieldReqLastDecompose),
+		Attach:        splitIDList(MetadataFrom(text, FieldReqAttach)),
+		Window:        MetadataFrom(text, FieldReqWindow),
 	}
 	if body, ok := SectionBody(text, ReqSectionSummary); ok {
 		req.Summary = body
@@ -271,6 +285,12 @@ func renderRequirementCard(req Requirement) string {
 	}
 	if req.LastDecompose != "" {
 		fmt.Fprintf(&b, "- %s: %s\n", FieldReqLastDecompose, req.LastDecompose)
+	}
+	if len(req.Attach) > 0 {
+		fmt.Fprintf(&b, "- %s: %s\n", FieldReqAttach, strings.Join(req.Attach, ", "))
+	}
+	if req.Window != "" {
+		fmt.Fprintf(&b, "- %s: %s\n", FieldReqWindow, req.Window)
 	}
 	b.WriteString("\n## " + ReqSectionSummary + "\n\n")
 	if req.Summary == "" {
@@ -494,6 +514,58 @@ func LinkRequirementTargets(root, id string, tasks []string, groups []string, un
 		return "", wrapFS(err, "board.req_failed_to_write_requirement_card", path)
 	}
 	return path, nil
+}
+
+// SetRequirementAttachments replaces the ATTACHMENTS field with the given
+// paths, stored verbatim (no copying or existence check; the launch prompt
+// hands them to the agent as-is). An empty list clears the field.
+func SetRequirementAttachments(root, id string, paths []string) (string, error) {
+	id, err := validateRequirementID(id)
+	if err != nil {
+		return "", err
+	}
+	cleaned := uniqueKeepOrder(attachPaths(paths))
+	for _, p := range cleaned {
+		if strings.ContainsAny(p, "\n\r") {
+			return "", kanbanError("board.transaction_invalid", FieldReqAttach)
+		}
+	}
+	release, err := requirementLock(root)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	path := requirementPath(root, id)
+	data, err := fs.ReadRegularFile(root, path)
+	if err != nil {
+		return "", wrapFS(err, "board.req_requirement_not_found", id)
+	}
+	next, err := setMetadata(string(data), FieldReqAttach, strings.Join(cleaned, ", "))
+	if err != nil {
+		return "", err
+	}
+	if err = fs.WriteTextAtomic(root, path, next, true); err != nil {
+		return "", wrapFS(err, "board.req_failed_to_write_requirement_card", path)
+	}
+	return path, nil
+}
+
+// attachPaths trims and drops empty entries from an attachment path list.
+func attachPaths(paths []string) []string {
+	var out []string
+	for _, p := range paths {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// ParseRequirementAttachments reads the ATTACHMENTS metadata field from a
+// raw requirement card text without a full parse; the launch prompt uses it
+// to hand attachment paths to the decompose agent.
+func ParseRequirementAttachments(text string) []string {
+	return splitIDList(MetadataFrom(text, FieldReqAttach))
 }
 
 // ConvertRequirement decomposes a requirement: the user supplies the task IDs

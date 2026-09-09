@@ -1,6 +1,8 @@
 package launch
 
 import (
+	"strings"
+
 	"github.com/dualface/kander/internal/board"
 	"github.com/dualface/kander/internal/config"
 )
@@ -11,13 +13,13 @@ import (
 // via ConvertRequirement). The Agent is responsible for creating one or more
 // task cards and then calling kander req convert to link them.
 type DecomposeArgs struct {
-	Root       string
-	Agent      string
-	AgentSet   bool
-	Launcher   string
-	ReqID      string
-	Message    string
-	MessageSet bool
+	Root        string
+	Agent       string
+	AgentSet    bool
+	Launcher    string
+	ReqID       string
+	Message     string
+	MessageSet  bool
 	MessageFile string
 	// Autonomous switches the agent prompt from "discuss with the user,
 	// confirm each card" to "decompose silently and write the cards". The
@@ -40,6 +42,11 @@ func decomposeAgentPrompt(reqID string, paths config.InstallPaths, message, card
 		return "", err
 	}
 	command := commandName(paths)
+	body := t("launch.prompt.decompose_body",
+		reqID,
+		cardText,
+		attachmentList(board.ParseRequirementAttachments(cardText)),
+	)
 	if autonomous {
 		return t("launch.prompt.decompose_autonomous",
 			t("launch.prompt.decompose_head", reqID),
@@ -48,6 +55,7 @@ func decomposeAgentPrompt(reqID string, paths config.InstallPaths, message, card
 			reqID,
 			message,
 			promptAgents(paths),
+			body,
 		), nil
 	}
 	return t("launch.prompt.decompose",
@@ -57,7 +65,17 @@ func decomposeAgentPrompt(reqID string, paths config.InstallPaths, message, card
 		reqID,
 		message,
 		promptAgents(paths),
+		body,
 	), nil
+}
+
+// attachmentList renders an attachment path list for the prompt; an empty
+// list renders as a plain "none".
+func attachmentList(paths []string) string {
+	if len(paths) == 0 {
+		return "N/A"
+	}
+	return strings.Join(paths, "; ")
 }
 
 // commandDecompose launches an Agent session to decompose a requirement card.
