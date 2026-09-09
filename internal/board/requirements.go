@@ -294,13 +294,6 @@ func WriteRequirementDocument(root, id, text string) error {
 	return fs.WriteTextAtomic(root, path, text, true)
 }
 
-// AcquireRequirementLock is the exported form of requirementLock for the
-// launch pipeline, which keeps its own copy of the root but should still
-// serialise concurrent writes against the requirement pool.
-func AcquireRequirementLock(root string) (func(), error) {
-	return requirementLock(root)
-}
-
 func renderRequirementCard(req Requirement) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "# %s\n\n", req.Title)
