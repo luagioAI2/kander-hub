@@ -65,30 +65,40 @@ func launchAgent(
 		return outcome, nil
 	}
 	create := plan.Launcher == "tmux-session" && !plan.SessionExists
-	result := tmuxLaunch(plan.Tmux, plan.Session, create, filepath.Dir(root), name)
-	if create && result.Code != 0 {
-		owner, exists := sessionOwner(plan.Tmux, plan.Session)
-		if exists && (owner == "" || owner == plan.Project) {
-			create = false
-			result = tmuxLaunch(plan.Tmux, plan.Session, false, filepath.Dir(root), name)
+	var window, pane string
+	if plan.ReusePane != "" {
+		// Restart the agent inside the existing decompose window instead of
+		// creating a fresh one, so re-launching on the same requirement does
+		// not accumulate orphan windows. The addressed pane is re-spawned
+		// with the new command.
+		window = plan.ReuseWindow
+		pane = plan.ReusePane
+	} else {
+		result := tmuxLaunch(plan.Tmux, plan.Session, create, filepath.Dir(root), name)
+		if create && result.Code != 0 {
+			owner, exists := sessionOwner(plan.Tmux, plan.Session)
+			if exists && (owner == "" || owner == plan.Project) {
+				create = false
+				result = tmuxLaunch(plan.Tmux, plan.Session, false, filepath.Dir(root), name)
+			}
 		}
-	}
-	if result.Code != 0 {
-		sub := "new-window"
+		if result.Code != 0 {
+			sub := "new-window"
+			if create {
+				sub = "new-session"
+			}
+			detail := orExit(trimNL(result.Stderr), result.Code)
+			return LaunchOutcome{}, fail(launchError("launch.tmux_failed", sub, detail))
+		}
+		locationParts := splitTab(trimNL(result.Stdout))
+		if len(locationParts) != 2 || locationParts[0] == "" || locationParts[1] == "" {
+			return LaunchOutcome{}, fail(launchError("launch.tmux_launch_failed_window_pane_id_was_not_returned"))
+		}
+		window, pane = locationParts[0], locationParts[1]
+		createdWindow = window
 		if create {
-			sub = "new-session"
+			_ = tmuxCapture(plan.Tmux, "set-option", "-t", plan.Session, projectSessionOpt, plan.Project)
 		}
-		detail := orExit(trimNL(result.Stderr), result.Code)
-		return LaunchOutcome{}, fail(launchError("launch.tmux_failed", sub, detail))
-	}
-	locationParts := splitTab(trimNL(result.Stdout))
-	if len(locationParts) != 2 || locationParts[0] == "" || locationParts[1] == "" {
-		return LaunchOutcome{}, fail(launchError("launch.tmux_launch_failed_window_pane_id_was_not_returned"))
-	}
-	window, pane := locationParts[0], locationParts[1]
-	createdWindow = window
-	if create {
-		_ = tmuxCapture(plan.Tmux, "set-option", "-t", plan.Session, projectSessionOpt, plan.Project)
 	}
 	outcome := LaunchOutcome{Window: window, Pane: pane}
 	if location != nil {

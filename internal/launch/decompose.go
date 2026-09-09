@@ -189,10 +189,49 @@ func commandDecompose(args DecomposeArgs) error {
 	if plan.Launcher == "herdr" || plan.Launcher == "tmux" || plan.Launcher == "tmux-session" {
 		loc = recordRequirementWindowLocation(root, plan, reqID)
 	}
+	// Re-running decompose on the same requirement should reuse its existing
+	// deploy window rather than create a brand-new one each time; otherwise
+	// orphan dsh windows pile up on the tmux server. If the previously
+	// recorded address is still reachable, hand it to launchAgent as a reuse
+	// target so it restarts the agent inside that pane.
+	if plan.Launcher == "tmux-session" || plan.Launcher == "tmux" {
+		if oldSession, oldWindow, oldPane, ok := tmuxAddress(board.ParseRequirementWindow(original)); ok &&
+			oldSession == plan.Session && staleWindowAlive(plan.Tmux, oldSession, oldWindow) {
+			plan.ReuseWindow = oldWindow
+			plan.ReusePane = oldPane
+		}
+	}
 	outcome, err := launchAgent(plan, root, "req-"+reqID, inv, loc, nil, &session)
 	if err != nil {
 		return err
 	}
 	taskFileHandedOff = true
 	return reportLaunch(t("launch.started"), board.Entry{TaskID: "req-" + reqID}, agentName, plan, outcome)
+}
+
+// tmuxAddress parses a stored "<launcher>:<session>:<window>:<pane>" WINDOW
+// value into its session, window and pane address. False unless it is a plain
+// tmux/tmux-session address on the default server.
+func tmuxAddress(stored string) (session, window, pane string, ok bool) {
+	if stored == "" || !strings.HasPrefix(stored, "tmux") {
+		return "", "", "", false
+	}
+	parts := strings.Split(stored, ":")
+	if len(parts) >= 4 {
+		return parts[1], parts[2], parts[3], true
+	}
+	return "", "", "", false
+}
+
+// staleWindowAlive reports whether a recorded tmux window (by session:window
+// id) still exists, so decompose can reuse it instead of opening a new one. A
+// window whose server or session is gone returns false and forces a fresh
+// launch. display-message to that target succeeds exactly when the window is
+// reachable.
+func staleWindowAlive(tmux, session, window string) bool {
+	if session == "" || window == "" {
+		return false
+	}
+	res := tmuxCapture(tmux, "display-message", "-p", "-t", session+":"+window, "#{window_id}")
+	return res.Code == 0
 }

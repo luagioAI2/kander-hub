@@ -50,6 +50,12 @@ type LaunchPlan struct {
 	SessionExists  bool
 	HerdrBin       string
 	HerdrWorkspace string
+	// ReuseWindow/ReusePane, when set, tell a tmux launch to restart the
+	// agent inside an existing terminal address instead of creating a new
+	// window. Used by decompose so re-running on the same requirement keeps a
+	// single live window instead of piling up orphans.
+	ReuseWindow string
+	ReusePane   string
 }
 
 // LaunchOutcome is the process or terminal address of one launch.

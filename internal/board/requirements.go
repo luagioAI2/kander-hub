@@ -820,6 +820,12 @@ func ParseRequirementMode(text string) string {
 	return MetadataFrom(text, FieldReqMode)
 }
 
+// ParseRequirementWindow returns the raw WINDOW metadata field, the launcher
+// address of the last decompose window, or "" when never launched.
+func ParseRequirementWindow(text string) string {
+	return MetadataFrom(text, FieldReqWindow)
+}
+
 // ConvertRequirement decomposes a requirement: the user supplies the task IDs
 // and/or task groups that implement it, the card records them and moves to
 // "decomposed". Use LinkRequirementTargets first when tasks are created later.
