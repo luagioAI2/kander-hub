@@ -121,5 +121,4 @@ var (
 	moveEntryFn         = board.MoveEntry
 	readRequirementFn   = board.ReadRequirementDocument
 	writeRequirementFn  = board.WriteRequirementDocument
-	acquireReqLockFn    = board.AcquireRequirementLock
 )

@@ -85,11 +85,12 @@ func attachmentList(paths []string) string {
 func commandDecompose(args DecomposeArgs) error {
 	root := args.Root
 	reqID := args.ReqID
-	release, err := acquireReqLockFn(root)
-	if err != nil {
-		return err
-	}
-	defer release()
+
+	// Every board read/write below (ReadRequirementDocument, SetRequirementMode,
+	// WriteRequirementDocument, recordRequirementWindowLocation) acquires and
+	// releases the requirements-pool lock itself, so this command must NOT hold
+	// that lock for the whole call: holding it and then re-entering any of those
+	// helpers would deadlock on the same exclusive lock file.
 
 	original, err := readRequirementFn(root, reqID)
 	if err != nil {
