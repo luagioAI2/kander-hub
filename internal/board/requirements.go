@@ -42,6 +42,12 @@ const (
 	// FieldReqWindow mirrors board.FieldWindow so the requirement card can
 	// record the launcher window of its decompose session for quick switch.
 	FieldReqWindow = "WINDOW"
+	// FieldReqMode records whether the decompose session runs as a
+	// collaborative orchestrator (asks the user to confirm each proposed task
+	// card before kander new) or as an autonomous orchestrator (proposes,
+	// then drives kander new directly). Valid values: "collaborative",
+	// "autonomous". Empty defaults to "collaborative".
+	FieldReqMode = "MODE"
 
 	// FieldReqSession mirrors board.FieldSession for requirement cards so the
 	// decompose agent's identity can be persisted next to the requirement and
@@ -54,6 +60,19 @@ const (
 
 	ReqSectionSummary = "SUMMARY"
 	ReqSectionNotes   = "NOTES"
+	// ReqSectionProposed stores task card spec.md drafts produced by the
+	// decompose orchestrator. Each draft lives under its own
+	// "## <task-id>" heading so kander can locate them without re-parsing.
+	ReqSectionProposed = "PROPOSED_TASKS"
+)
+
+const (
+	// ReqModeCollaborative makes the orchestrator present each draft to the
+	// user and only kander new after an explicit confirmation.
+	ReqModeCollaborative = "collaborative"
+	// ReqModeAutonomous makes the orchestrator run without confirmation and
+	// drive kander new + req convert directly from the drafts.
+	ReqModeAutonomous = "autonomous"
 )
 
 var (
@@ -91,6 +110,13 @@ type Requirement struct {
 	// Window is the launcher window address of the last decompose session,
 	// written by the launch pipeline (tmux:session:window:pane or herdr:tab:pane).
 	Window string
+	// Mode is the orchestrator collaboration mode: "collaborative" (default)
+	// or "autonomous". Empty is treated as collaborative.
+	Mode string
+	// Proposed holds draft task card bodies keyed by their draft slug.
+	// The orchestrator fills this section in PROPOSED_TASKS; the front-end
+	// renders one column per draft and the user confirms or rejects each.
+	Proposed map[string]string
 }
 
 func requirementsRoot(root string) string {
@@ -143,12 +169,16 @@ func parseRequirement(id, path, text string) Requirement {
 		LastDecompose: MetadataFrom(text, FieldReqLastDecompose),
 		Attach:        splitIDList(MetadataFrom(text, FieldReqAttach)),
 		Window:        MetadataFrom(text, FieldReqWindow),
+		Mode:          MetadataFrom(text, FieldReqMode),
 	}
 	if body, ok := SectionBody(text, ReqSectionSummary); ok {
 		req.Summary = body
 	}
 	if body, ok := SectionBody(text, ReqSectionNotes); ok {
 		req.Notes = body
+	}
+	if start, end, ok := proposedSectionSpan(text); ok {
+		req.Proposed = parseProposedTasks(text[start:end])
 	}
 	if req.Status == "" {
 		req.Status = ReqStatusDraft
@@ -292,6 +322,9 @@ func renderRequirementCard(req Requirement) string {
 	if req.Window != "" {
 		fmt.Fprintf(&b, "- %s: %s\n", FieldReqWindow, req.Window)
 	}
+	if req.Mode != "" {
+		fmt.Fprintf(&b, "- %s: %s\n", FieldReqMode, req.Mode)
+	}
 	b.WriteString("\n## " + ReqSectionSummary + "\n\n")
 	if req.Summary == "" {
 		b.WriteString(Placeholder + "\n")
@@ -304,7 +337,196 @@ func renderRequirementCard(req Requirement) string {
 	} else {
 		b.WriteString(req.Notes + "\n")
 	}
+	if len(req.Proposed) > 0 {
+		b.WriteString("\n## " + ReqSectionProposed + "\n\n")
+		b.WriteString("```text\n")
+		slugs := make([]string, 0, len(req.Proposed))
+		for s := range req.Proposed {
+			slugs = append(slugs, s)
+		}
+		sort.Strings(slugs)
+		for _, slug := range slugs {
+			fmt.Fprintf(&b, "### %s\n\n", slug)
+			b.WriteString(req.Proposed[slug])
+			if !strings.HasSuffix(req.Proposed[slug], "\n") {
+				b.WriteString("\n")
+			}
+		}
+		b.WriteString("```\n")
+	}
 	return b.String()
+}
+
+// proposedSectionSpan returns [start,end) byte offsets of the PROPOSED_TASKS
+// section (including the heading and any trailing blank line) in raw card
+// text. The body lives inside a ```text fence, so ## headings inside the
+// drafts are ignored; the section ends at the closing fence or the next
+// top-level ## heading outside it, whichever comes first.
+func proposedSectionSpan(text string) (int, int, bool) {
+	lines := strings.Split(text, "\n")
+	start := -1
+	inFence := false
+	for i, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !inFence {
+			if trimmed == "## "+ReqSectionProposed {
+				start = i
+				continue
+			}
+			if start >= 0 && strings.HasPrefix(trimmed, "## ") {
+				end := byteOffset(text, i)
+				return byteOffset(text, start), end, true
+			}
+			if trimmed == "```text" || trimmed == "```" {
+				inFence = true
+			}
+			continue
+		}
+		if trimmed == "```" {
+			inFence = false
+		}
+	}
+	if start < 0 {
+		return 0, 0, false
+	}
+	return byteOffset(text, start), len(text), true
+}
+
+// byteOffset converts a zero-based line index into a byte offset in text.
+func byteOffset(text string, lineIndex int) int {
+	lines := strings.Split(text, "\n")
+	off := 0
+	for i := 0; i < lineIndex && i < len(lines); i++ {
+		off += len(lines[i]) + 1
+	}
+	return off
+}
+
+// replaceProposedSection writes the PROPOSED_TASKS body (a fence-wrapped
+// string, or empty to remove) in place of any existing section.
+func replaceProposedSection(text, body string) (string, error) {
+	heading := "## " + ReqSectionProposed
+	if body == "" {
+		start, end, ok := proposedSectionSpan(text)
+		if !ok {
+			return text, nil
+		}
+		out := text[:start]
+		// Drop the blank line that separated the section from the previous one.
+		out = strings.TrimRight(out, "\n")
+		// Re-add nothing: preserve everything after `end` verbatim.
+		return out + text[end:], nil
+	}
+	if start, end, ok := proposedSectionSpan(text); ok {
+		return text[:start] + heading + "\n\n" + body + text[end:], nil
+	}
+	return strings.TrimRight(text, "\n") + "\n\n" + heading + "\n\n" + body, nil
+}
+
+// parseProposedTasks extracts each "### <slug>" section under PROPOSED_TASKS.
+// The body is expected to live inside a ```text fence; the fence markers and
+// the leading PROPOSED_TASKS heading are skipped. Returns an empty map (never
+// nil) when the section is missing or empty.
+func parseProposedTasks(body string) map[string]string {
+	out := map[string]string{}
+	lines := strings.Split(body, "\n")
+	active := false
+	inFence := false
+	var current string
+	var buf strings.Builder
+	flush := func() {
+		if current == "" {
+			return
+		}
+		out[current] = strings.TrimLeft(strings.TrimRight(buf.String(), "\n"), "\n") + "\n"
+		if v := out[current]; v == "\n" {
+			delete(out, current)
+		}
+	}
+	for _, raw := range lines {
+		line := strings.TrimSpace(raw)
+		if !active {
+			if line == "## "+ReqSectionProposed {
+				active = true
+			}
+			continue
+		}
+		if !inFence {
+			if line == "```text" || line == "```" {
+				inFence = true
+				continue
+			}
+			// Top-level section heading after PROPOSED_TASKS terminates it.
+			if strings.HasPrefix(line, "## ") {
+				break
+			}
+			continue
+		}
+		if line == "```" {
+			inFence = false
+			continue
+		}
+		if strings.HasPrefix(line, "### ") {
+			flush()
+			buf.Reset()
+			current = strings.TrimSpace(strings.TrimPrefix(line, "### "))
+			continue
+		}
+		if current == "" {
+			continue
+		}
+		buf.WriteString(raw)
+		buf.WriteString("\n")
+	}
+	flush()
+	return out
+}
+
+// SetProposedTasks replaces the PROPOSED_TASKS section with the supplied
+// drafts. Slug keys are sorted on write so the section stays stable across
+// repeated orchestrator runs.
+func SetProposedTasks(root, id string, drafts map[string]string) (string, error) {
+	id, err := validateRequirementID(id)
+	if err != nil {
+		return "", err
+	}
+	release, err := requirementLock(root)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	path := requirementPath(root, id)
+	data, err := fs.ReadRegularFile(root, path)
+	if err != nil {
+		return "", wrapFS(err, "board.req_requirement_not_found", id)
+	}
+	var section string
+	if len(drafts) > 0 {
+		slugs := make([]string, 0, len(drafts))
+		for s := range drafts {
+			slugs = append(slugs, s)
+		}
+		sort.Strings(slugs)
+		var b strings.Builder
+		b.WriteString("```text\n")
+		for _, slug := range slugs {
+			fmt.Fprintf(&b, "### %s\n\n", slug)
+			b.WriteString(drafts[slug])
+			if !strings.HasSuffix(drafts[slug], "\n") {
+				b.WriteString("\n")
+			}
+		}
+		b.WriteString("```\n")
+		section = b.String()
+	}
+	next, err := replaceProposedSection(string(data), section)
+	if err != nil {
+		return "", err
+	}
+	if err = fs.WriteTextAtomic(root, path, next, true); err != nil {
+		return "", wrapFS(err, "board.req_failed_to_write_requirement_card", path)
+	}
+	return path, nil
 }
 
 // AddRequirement creates a new requirement card in the draft state and returns its path.
@@ -561,11 +783,48 @@ func attachPaths(paths []string) []string {
 	return out
 }
 
+// SetRequirementMode writes the orchestrator collaboration mode. Valid values
+// are "collaborative" and "autonomous"; an empty value clears the field.
+func SetRequirementMode(root, id, mode string) (string, error) {
+	id, err := validateRequirementID(id)
+	if err != nil {
+		return "", err
+	}
+	if mode != "" && mode != ReqModeCollaborative && mode != ReqModeAutonomous {
+		return "", kanbanError("board.transaction_invalid", FieldReqMode)
+	}
+	release, err := requirementLock(root)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	path := requirementPath(root, id)
+	data, err := fs.ReadRegularFile(root, path)
+	if err != nil {
+		return "", wrapFS(err, "board.req_requirement_not_found", id)
+	}
+	next, err := setMetadata(string(data), FieldReqMode, mode)
+	if err != nil {
+		return "", err
+	}
+	if err = fs.WriteTextAtomic(root, path, next, true); err != nil {
+		return "", wrapFS(err, "board.req_failed_to_write_requirement_card", path)
+	}
+	return path, nil
+}
+
 // ParseRequirementAttachments reads the ATTACHMENTS metadata field from a
 // raw requirement card text without a full parse; the launch prompt uses it
 // to hand attachment paths to the decompose agent.
 func ParseRequirementAttachments(text string) []string {
 	return splitIDList(MetadataFrom(text, FieldReqAttach))
+}
+
+// ParseRequirementMode returns the orchestrator collaboration mode recorded
+// on the card. Empty string means "not set"; callers should treat that as
+// collaborative.
+func ParseRequirementMode(text string) string {
+	return MetadataFrom(text, FieldReqMode)
 }
 
 // ConvertRequirement decomposes a requirement: the user supplies the task IDs

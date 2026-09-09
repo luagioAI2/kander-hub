@@ -14,18 +14,19 @@ import (
 
 func reqUsage(w io.Writer, action string) {
 	messages := map[string]string{
-		"":         "board.messages.req",
-		"new":      "board.messages.req-new",
-		"list":     "board.messages.req-list",
-		"show":     "board.messages.req-show",
-		"convert":  "board.messages.req-convert",
-		"link":     "board.messages.req-link",
-		"unlink":   "board.messages.req-unlink",
-		"remove":   "board.messages.req-remove",
-		"complete": "board.messages.req-complete",
+		"":          "board.messages.req",
+		"new":       "board.messages.req-new",
+		"list":      "board.messages.req-list",
+		"show":      "board.messages.req-show",
+		"convert":   "board.messages.req-convert",
+		"link":      "board.messages.req-link",
+		"unlink":    "board.messages.req-unlink",
+		"remove":    "board.messages.req-remove",
+		"complete":  "board.messages.req-complete",
 		"decompose": "board.messages.req-decompose",
-		"tui":      "board.messages.req-tui",
-		"serve":    "board.messages.req-serve",
+		"draft":     "board.messages.req-draft",
+		"tui":       "board.messages.req-tui",
+		"serve":     "board.messages.req-serve",
 	}
 	if id, ok := messages[action]; ok {
 		fmt.Fprintln(w, t(id))
@@ -143,6 +144,8 @@ func RunRequirement(args []string) int {
 			return 2
 		}
 		return RunRequirementDecompose(rest)
+	case "draft":
+		return runReqDraft(rest)
 	case "tui":
 		if RunReqTUI == nil {
 			fmt.Fprintln(os.Stderr, t("board.req_unknown_action", action))
@@ -477,5 +480,62 @@ func runReqComplete(args []string) int {
 		return fail(err)
 	}
 	fmt.Println(t("board.req_completed", id, path))
+	return 0
+}
+
+// runReqDraft upserts one PROPOSED_TASKS draft. It reads the body from stdin
+// (piped by the orchestrator agent) or from --body-file, keyed by slug.
+func runReqDraft(args []string) int {
+	var bodyFile string
+	var err error
+	args, bodyFile, _, err = takeValueFlag(args, "--body-file")
+	if err != nil {
+		return reqUsageFail("draft", "board.option_requires_a_value", "--body-file")
+	}
+	if len(args) != 2 {
+		return reqUsageFail("draft", "board.req_draft_slug_and_id_required")
+	}
+	id, slug := args[0], args[1]
+	if strings.HasPrefix(id, "-") || strings.HasPrefix(slug, "-") {
+		return reqUsageFail("draft", "board.req_draft_slug_and_id_required")
+	}
+	var body string
+	if bodyFile != "" {
+		data, err := os.ReadFile(bodyFile)
+		if err != nil {
+			return fail(err)
+		}
+		body = strings.TrimRight(string(data), "\n")
+	} else {
+		data, err := io.ReadAll(os.Stdin)
+		if err != nil {
+			return fail(err)
+		}
+		body = strings.TrimRight(string(data), "\n")
+	}
+	if strings.TrimSpace(body) == "" {
+		return fail(kanbanError("board.req_draft_body_required"))
+	}
+	root, err := requireRoot()
+	if err != nil {
+		return fail(err)
+	}
+	reqs, err := loadReqsForRun(root)
+	if err != nil {
+		return fail(err)
+	}
+	req, err := findRequirement(reqs, id)
+	if err != nil {
+		return fail(err)
+	}
+	drafts := map[string]string{}
+	for k, v := range req.Proposed {
+		drafts[k] = v
+	}
+	drafts[slug] = body
+	if _, err := SetProposedTasks(root, id, drafts); err != nil {
+		return fail(err)
+	}
+	fmt.Println(t("board.req_draft_written", id, slug))
 	return 0
 }

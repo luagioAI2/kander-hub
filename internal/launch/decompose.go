@@ -30,10 +30,11 @@ type DecomposeArgs struct {
 
 // decomposeAgentPrompt is the body that the Agent receives as its task file.
 // It deliberately reuses startAgentPrompt's rule-loading contract; the
-// differences are the head and the body template. When autonomous is true
-// the collaborative-confirmation wording is swapped for a direct-decompose
-// instruction, but the launcher window behaviour is identical.
-func decomposeAgentPrompt(reqID string, paths config.InstallPaths, message, cardText string, autonomous bool) (string, error) {
+// differences are the head and the body template. mode carries the
+// requirement's MODE field and switches the orchestrator between
+// collaborative (asks the user to confirm each draft) and autonomous
+// (proposes then drives kander new directly).
+func decomposeAgentPrompt(reqID string, paths config.InstallPaths, message, cardText, mode string) (string, error) {
 	if paths.Mode == config.ModeProject && paths.ProjectRoot == "" {
 		return "", launchError("config.project_install_paths_are_missing_the_main_worktree")
 	}
@@ -47,26 +48,24 @@ func decomposeAgentPrompt(reqID string, paths config.InstallPaths, message, card
 		cardText,
 		attachmentList(board.ParseRequirementAttachments(cardText)),
 	)
-	if autonomous {
+	head := t("launch.prompt.decompose_head", reqID)
+	if mode == board.ReqModeAutonomous {
 		return t("launch.prompt.decompose_autonomous",
-			t("launch.prompt.decompose_head", reqID),
-			rules,
-			command,
-			reqID,
+			head,
 			message,
-			promptAgents(paths),
-			body,
-		), nil
+			command,
+		) + "\n\n" + body + "\n\n" + rules + "\n", nil
 	}
 	return t("launch.prompt.decompose",
-		t("launch.prompt.decompose_head", reqID),
-		rules,
-		command,
-		reqID,
+		head,
 		message,
-		promptAgents(paths),
-		body,
-	), nil
+	) + "\n\n" + body + "\n\n" + rules + "\n", nil
+}
+
+// ParseRequirementMode returns the orchestrator mode recorded on a card, or
+// empty when absent.
+func parseRequirementMode(text string) string {
+	return board.ParseRequirementMode(text)
 }
 
 // attachmentList renders an attachment path list for the prompt; an empty
@@ -79,8 +78,10 @@ func attachmentList(paths []string) string {
 }
 
 // commandDecompose launches an Agent session to decompose a requirement card.
-// The session ref and a timestamp are recorded on the requirement so the user
-// can later resume with kander req resume <id>.
+// The launched session is the requirement's orchestrator: it follows
+// KANDER-TASK-INTAKE-RULES.md and, once a plan is agreed, KANDER-TASK-GROUP-RULES.md.
+// The card's MODE field (collaborative | autonomous) drives whether the
+// orchestrator asks for confirmation between drafts.
 func commandDecompose(args DecomposeArgs) error {
 	root := args.Root
 	reqID := args.ReqID
@@ -92,6 +93,15 @@ func commandDecompose(args DecomposeArgs) error {
 
 	original, err := readRequirementFn(root, reqID)
 	if err != nil {
+		return err
+	}
+	mode := board.ParseRequirementMode(original)
+	if args.Autonomous {
+		mode = board.ReqModeAutonomous
+	} else if mode == "" {
+		mode = board.ReqModeCollaborative
+	}
+	if _, err := board.SetRequirementMode(root, reqID, mode); err != nil {
 		return err
 	}
 	cfg, err := loadEffective()
@@ -135,7 +145,7 @@ func commandDecompose(args DecomposeArgs) error {
 	if err != nil {
 		return err
 	}
-	body, err := decomposeAgentPrompt(reqID, paths, args.Message, original, args.Autonomous)
+	body, err := decomposeAgentPrompt(reqID, paths, args.Message, original, mode)
 	if err != nil {
 		return err
 	}

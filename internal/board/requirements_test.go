@@ -296,6 +296,90 @@ func TestRequirementAttachmentsAndWindow(t *testing.T) {
 	}
 }
 
+func TestRequirementModeRoundTrip(t *testing.T) {
+	root := reqTestRoot(t)
+	path, err := AddRequirement(root, "login-fix", "Fix login", "src", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	id := todayPrefix() + "-login-fix-req"
+	// Default (empty) parses as collaborative, never written to disk.
+	reqs, _, err := LoadRequirements(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if reqs[0].Mode != "" {
+		t.Fatalf("default mode = %q, want empty", reqs[0].Mode)
+	}
+	if _, err := SetRequirementMode(root, id, ReqModeAutonomous); err != nil {
+		t.Fatal(err)
+	}
+	reqs, _, _ = LoadRequirements(root)
+	if reqs[0].Mode != ReqModeAutonomous {
+		t.Fatalf("mode = %q, want %q", reqs[0].Mode, ReqModeAutonomous)
+	}
+	raw := readReqCard(t, root, id)
+	if ParseRequirementMode(raw) != ReqModeAutonomous {
+		t.Fatalf("ParseRequirementMode = %q", ParseRequirementMode(raw))
+	}
+	// Invalid mode is rejected.
+	if _, err := SetRequirementMode(root, id, "wild"); err == nil {
+		t.Fatal("expected invalid mode rejection")
+	}
+	_ = path
+}
+
+func TestProposedTasksRoundTrip(t *testing.T) {
+	root := reqTestRoot(t)
+	if _, err := AddRequirement(root, "login-fix", "Fix login", "src", ""); err != nil {
+		t.Fatal(err)
+	}
+	id := todayPrefix() + "-login-fix-req"
+	drafts := map[string]string{
+		"login-ui":  "# Login UI\n\n## GOAL\n\nship a usable login form\n",
+		"login-api": "# Login API\n\n## GOAL\n\nship the auth endpoint\n",
+	}
+	if _, err := SetProposedTasks(root, id, drafts); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("card:\n%s", readReqCard(t, root, id))
+	reqs, _, err := LoadRequirements(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(reqs) != 1 {
+		t.Fatalf("want 1 requirement, got %d", len(reqs))
+	}
+	got := reqs[0].Proposed
+	if len(got) != 2 {
+		t.Fatalf("Proposed = %v", got)
+	}
+	for slug, body := range drafts {
+		if got[slug] != body {
+			t.Fatalf("Proposed[%s] = %q, want %q", slug, got[slug], body)
+		}
+	}
+	// Upsert one, remove the other, persist again.
+	drafts["login-ui"] = "# Login UI v2\n\n## GOAL\n\nrevised\n"
+	delete(drafts, "login-api")
+	if _, err := SetProposedTasks(root, id, drafts); err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("after upsert:\n%s", readReqCard(t, root, id))
+	reqs, _, _ = LoadRequirements(root)
+	if len(reqs[0].Proposed) != 1 || reqs[0].Proposed["login-ui"] != drafts["login-ui"] {
+		t.Fatalf("upsert removed unexpected entries: %v", reqs[0].Proposed)
+	}
+	// Clearing all drafts removes the section entirely.
+	if _, err := SetProposedTasks(root, id, nil); err != nil {
+		t.Fatal(err)
+	}
+	raw := readReqCard(t, root, id)
+	if strings.Contains(raw, ReqSectionProposed) {
+		t.Fatalf("section not removed:\n%s", raw)
+	}
+}
+
 func readReqCard(t *testing.T, root, id string) string {
 	t.Helper()
 	data, err := os.ReadFile(filepath.Join(root, RequirementsDir, id+".md"))

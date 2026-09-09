@@ -71,6 +71,41 @@ func SectionBody(text, heading string) (string, bool) {
 	return strings.TrimSpace(text[loc[1]:end]), true
 }
 
+// SetSection replaces or appends a ## section. When body is empty the section
+// is removed entirely; otherwise the section header is followed by the body
+// (which may itself be empty, leaving a placeholder section). Section order
+// follows the existing layout: a newly inserted section lands at the end.
+func SetSection(text, heading, body string) (string, error) {
+	re := regexp.MustCompile(`(?m)^## ` + TokenPattern(heading) + `\s*$`)
+	loc := re.FindStringIndex(text)
+	if body == "" {
+		if loc == nil {
+			return text, nil
+		}
+		end := len(text)
+		if next := headingRe.FindStringIndex(text[loc[1]:]); next != nil {
+			end = loc[1] + next[0]
+		} else {
+			// Drop the trailing newline that used to terminate the section so
+			// the file does not gain a stray blank line at EOF.
+			end = loc[1]
+			for end > 0 && text[end-1] == '\n' {
+				end--
+			}
+		}
+		return text[:loc[0]] + text[end:], nil
+	}
+	if loc == nil {
+		return strings.TrimRight(text, "\n") + "\n\n## " + heading + "\n\n" + body + "\n", nil
+	}
+	end := len(text)
+	if next := headingRe.FindStringIndex(text[loc[1]:]); next != nil {
+		end = loc[1] + next[0]
+	}
+	head := strings.TrimRight(text[:end], "\n") + "\n\n"
+	return head + "## " + heading + "\n\n" + body + "\n\n" + text[end:], nil
+}
+
 func resultFrom(text string) string {
 	match := resultRe.FindStringSubmatch(text)
 	if match == nil {
