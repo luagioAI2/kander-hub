@@ -161,6 +161,7 @@ func commandDecompose(args DecomposeArgs) error {
 		}
 	}()
 	prompt := taskInstruction(t("launch.prompt.decompose_head", reqID), taskFile)
+	isDSH := agentName == "dsh"
 	// Decomposition uses the large scale model by default because reading
 	// the requirement, asking clarifying questions, and producing N task
 	// specs is naturally a large-scope job.
@@ -170,7 +171,12 @@ func commandDecompose(args DecomposeArgs) error {
 		return err
 	}
 	if agentName == "dsh" {
+		// The dsh tui profile ignores a positional prompt; the decompose
+		// instruction is injected into the live TUI after launch (see below).
+		// The task file stays on disk so the orchestrator can read it too.
+		isDSH = true
 		prompt = ""
+		taskFileHandedOff = true
 	} else {
 		args2 = append(args2, prompt)
 	}
@@ -204,6 +210,14 @@ func commandDecompose(args DecomposeArgs) error {
 	outcome, err := launchAgent(plan, root, "req-"+reqID, inv, loc, nil, &session)
 	if err != nil {
 		return err
+	}
+	// Feed the decompose instruction into the live dsh TUI so the orchestrator
+	// actually works the requirement instead of sitting at a blank prompt.
+	// injectDSHTask polls for the dsh> prompt, then pastes the full body.
+	if isDSH {
+		if injectErr := injectDSHTask(plan, outcome, body); injectErr != nil {
+			return injectErr
+		}
 	}
 	taskFileHandedOff = true
 	return reportLaunch(t("launch.started"), board.Entry{TaskID: "req-" + reqID}, agentName, plan, outcome)
