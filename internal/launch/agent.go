@@ -3,7 +3,6 @@ package launch
 import (
 	"fmt"
 	"math"
-	"os"
 	"path/filepath"
 	"time"
 
@@ -209,10 +208,11 @@ func reportLaunch(verb string, entry board.Entry, agentName string, plan LaunchP
 		fmt.Println(t(
 			"launch.session_window", head, plan.Session, outcome.Window,
 		))
-		hint := "tmux attach -t " + plan.Session
-		if os.Getenv("TMUX") != "" {
-			hint = "tmux switch-client -t " + plan.Session
-		}
+		// In tmux-session mode the session name doubles as the tmux server
+		// (-L) and the window lives on that server. attach-session with -L
+		// works from anywhere (inside or outside tmux, same or other server),
+		// whereas switch-client only works from within the same server.
+		hint := "tmux -L " + plan.Session + " attach-session -t " + plan.Session + ":" + outcome.Window
 		fmt.Println(t("launch.view", hint))
 		return nil
 	default:
