@@ -240,12 +240,22 @@ func tmuxAddress(stored string) (session, window, pane string, ok bool) {
 // staleWindowAlive reports whether a recorded tmux window (by session:window
 // id) still exists, so decompose can reuse it instead of opening a new one. A
 // window whose server or session is gone returns false and forces a fresh
-// launch. display-message to that target succeeds exactly when the window is
-// reachable.
+// launch. list-windows -t <session> fails with a non-zero exit when the
+// session is missing, and lists the live window ids otherwise (display-message
+// is not reliable here: it returns exit 0 with empty output for an absent
+// target).
 func staleWindowAlive(tmux, session, window string) bool {
 	if session == "" || window == "" {
 		return false
 	}
-	res := tmuxCapture(tmux, "display-message", "-p", "-t", session+":"+window, "#{window_id}")
-	return res.Code == 0
+	res := tmuxCapture(tmux, "list-windows", "-t", session, "-F", "#{window_id}")
+	if res.Code != 0 {
+		return false
+	}
+	for _, line := range strings.Split(res.Stdout, "\n") {
+		if strings.TrimSpace(line) == window {
+			return true
+		}
+	}
+	return false
 }
