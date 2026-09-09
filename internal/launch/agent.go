@@ -208,11 +208,12 @@ func reportLaunch(verb string, entry board.Entry, agentName string, plan LaunchP
 		fmt.Println(t(
 			"launch.session_window", head, plan.Session, outcome.Window,
 		))
-		// In tmux-session mode the session name doubles as the tmux server
-		// (-L) and the window lives on that server. attach-session with -L
-		// works from anywhere (inside or outside tmux, same or other server),
-		// whereas switch-client only works from within the same server.
-		hint := "tmux -L " + plan.Session + " attach-session -t " + plan.Session + ":" + outcome.Window
+		// The tmux-session launcher creates the project session on the current
+		// (default) tmux server — the session name does not stand for a
+		// separate -L server. From a shell outside tmux the user attaches with
+		// `tmux attach-session -t <session>`; running from inside tmux the w
+		// key in the req TUI performs the same jump with switch-client.
+		hint := "tmux attach-session -t " + plan.Session
 		fmt.Println(t("launch.view", hint))
 		return nil
 	default:
