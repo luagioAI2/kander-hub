@@ -16,10 +16,9 @@
     "review": [
       "--profile",
       "headless",
-      "--model",
-      "{model}",
-      "--effort",
-      "{effort}"
+      "--patch",
+      "{prompt_file:overlay}",
+      "{instruction}"
     ]
   },
   "session": {
@@ -46,11 +45,18 @@
     "inspection": "Use only read-only inspection: read, search, and shell commands that do not write. Never create, modify, or delete any file; the review gate fails if HEAD moves or the worktree is dirty.",
     "spawns_helpers": false,
     "snapshot_spec": false,
-    "stdin": "instruction",
+    "stdin": "none",
     "output": {
-      "source": "file",
+      "source": "stdout",
       "parse": "raw"
-    }
+    },
+    "prompt_files": [
+      {
+        "name": "overlay",
+        "path": "review-overlay.yml",
+        "template": "# Kander review overlay: pin this one-shot headless boot to a read-only sandbox.\n# The headless profile's own patch layer opens it up (danger-full-access) so that\n# pwsh can run there; a review must not inherit that. A --patch layer replaces each\n# node's whole config object, so every key of a replaced node is repeated here.\n- id: sandbox-policy\n  config:\n    mode: read-only\n    workspaceRoot: !!js process.cwd()\n- id: approval\n  config:\n    policy: never\n- id: permission\n  config:\n    presets:\n      read-only:\n        sandbox: read-only\n        approval: ask\n      workspace-write:\n        sandbox: workspace-write\n        approval: ask\n      danger-full-access:\n        sandbox: danger-full-access\n        approval: never\n    defaultPreset: read-only\n"
+      }
+    ]
   },
   "rules_target": {
     "global": ".dsh/AGENTS.md",
