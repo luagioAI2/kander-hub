@@ -92,6 +92,7 @@ Arguments and the read-only gate for a single `kander review` are in `KANDER-BAS
 ## Goals and Boundaries
 
 - Review goal: the plan or user goal is fully and correctly implemented, the flow is closed, and there are no directly related logic holes or regressions; expanding the task scope is forbidden.
+- For frontend-triggered tasks, also load `KANDER-FRONTEND-RULES.md` and assess the applicable verification levels and evidence. Do not treat an unexecuted browser or visual level as passed.
 - `QA` first checks project architecture, module responsibilities, dependency direction, public boundaries and integration patterns, then directly related correctness, regressions, testability and code quality (single responsibility, readability, change locality, coupling and duplication, error and resource handling).
 
   `QA` does not do general performance review or report performance findings.
@@ -103,6 +104,7 @@ Arguments and the read-only gate for a single `kander review` are in `KANDER-BAS
   Do not sweep unrelated over-limit files, and do not trigger when the final line count is not above the base.
 
 - `QA` findings are limited to realistically reachable problems within the task context, existing contracts, or the code and module boundaries touched this round. Exhaustively stacked conditions, extreme edge cases, fabricated failures or low-realism problems are forbidden; stop once task-related realistic risks are covered, and do not expand into a repository quality sweep.
+- For each important acceptance assertion, ask whether the protected defect could still exist while the assertion passes. A build, route response, or element-presence check is not a substitute for the behavior it is meant to prove. Findings may require a direct call-path check, value-flow probe, or practical temporary mutation check; restore any temporary mutation before delivery.
 - Only handle problems introduced, aggravated or masked by this task. Existing problems that are neither aggravated nor masked do not require fixes, do not block review or integration, and are not sent to the user for decision; unless the user explicitly includes them in this round.
 - If a review result requires changing business logic, user flow or external contracts beyond the user's explicit goal, explain the impact to the user and let the user decide; choosing or implementing that change on the basis of a review conclusion alone is forbidden.
 - For any issue needing the user's attention or decision, the main agent explains each item in detail: the problem, trigger condition, actual impact and suggested handling, marks the review role that raised it, then gives numbered options; giving only abstract options is forbidden, and source attribution must not be lost when aggregating results from multiple agents.

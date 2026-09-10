@@ -54,3 +54,6 @@ path, and a self-check failure never counts as an extra review round.
 - Run the minimal verification that directly proves the change.
 - When a test or the environment fails, record the actual command and error; never mark it as passed. The same applies to pre-existing environment failures.
 - Replace sensitive values with `[REDACTED]`; keep the rest of the error text verbatim.
+- For frontend-triggered tasks, load `KANDER-FRONTEND-RULES.md` and record the applicable L0-L5 levels, including `N/A` reasons or environment limitations. A successful build, route response, or element-presence check is not by itself proof of user-visible behavior.
+- Before calling an important assertion sufficient, ask whether the protected defect could still exist while it passes. If so, strengthen the assertion or add a direct behavior check; do not obtain a green result by skipping, weakening, deleting, or excluding a failing test.
+- When practical, temporarily break the protected behavior and confirm the critical check fails, then restore the change before delivery. Record this as verification evidence rather than leaving the temporary mutation in the task.

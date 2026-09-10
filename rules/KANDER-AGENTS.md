@@ -47,8 +47,11 @@ The directory containing this file is the "rules root". It determines the scope 
 | `rules.task_groups`   | `KANDER-TASK-GROUP-RULES.md`    | When enabled, when planning or running a task group   |
 | `rules.review`        | `KANDER-REVIEW-RULES.md`        | When enabled, to decide review triggers and execution |
 | `rules.reporting`     | `KANDER-REPORTING-RULES.md`     | When enabled, when reporting at the end of a task     |
+| frontend task trigger | `KANDER-FRONTEND-RULES.md`      | When the task changes a frontend, browser flow, visual output, or the user requests frontend verification |
 
 - Read `KANDER-KANBAN-RULES.md` whenever kanban commands are used.
+- Read `KANDER-FRONTEND-RULES.md` only for its task triggers; it is not a global requirement for unrelated backend, CLI, library, documentation, or configuration work.
+- The frontend rules are a documentation protocol only. They do not add a config switch or provide `kander e2e` or `kander visual` commands.
 - `task_groups` depends on `git`.
 - `review` reads the "Delivery Self-Check" of `KANDER-CODE-RULES.md` only when `code` is also on; with `code` off, `KANDER-REVIEW-RULES.md` "Preconditions and Execution" states what the author checks before review instead.
 - With `task_intake` off, no plan options are presented and cards are created manually; a task group is still possible when `task_groups` is on.

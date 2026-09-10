@@ -109,7 +109,7 @@ Go runtime writes of configuration, board migration, the review runtime, Git exc
 
 ## Released Rules
 
-- `rules/KANDER-AGENTS.md` is the released rules entry; it first reads `kander config --json` for the current scope. `KANDER-BASE-RULES.md` and `KANDER-KANBAN-RULES.md` are the tool protocol; the other seven module booklets load per switch and per need, all live in `rules/`, and exist only in English. No customized rule files are generated, and disabled modules are not loaded through cross references.
+- `rules/KANDER-AGENTS.md` is the released rules entry; it first reads `kander config --json` for the current scope. `KANDER-BASE-RULES.md` and `KANDER-KANBAN-RULES.md` are the tool protocol; the optional module booklets load per switch and per need, while task-triggered rule booklets such as `KANDER-FRONTEND-RULES.md` load only for matching work. All released rules live in `rules/` and exist only in English. No customized rule files are generated, and disabled modules are not loaded through cross references.
 - The root `AGENTS.md` only constrains development of this repository; when changing the released workflow, change `rules/`. Do not write implementation details into the released booklets, and do not put the package map into `KANDER-AGENTS.md`.
 - The runtime-created `kanban/` is machine-local shared data; never commit it and never write it into the project `.gitignore`.
 
@@ -127,3 +127,4 @@ Go runtime writes of configuration, board migration, the review runtime, Git exc
 - [Original reproduction acceptance mapping](docs/recovery-regressions.md): the 13 original bad behaviors, their owning regressions, and cross-module recovery acceptance.
 - [Custom execution agents](docs/custom-agents.md): executable names, process names, dialect/argv templates, session policies, and review boundaries.
 - [Output parsing](docs/output-parsing.md): declarative `source`/`format`/`select`/`parse`/`join`/`success`, line conditions, and `{name}` / `{{` `}}` placeholders.
+- [Frontend verification](docs/frontend-verification.md): task-triggered L0-L5 evidence, browser and visual verification boundaries, and anti-fake-green acceptance.

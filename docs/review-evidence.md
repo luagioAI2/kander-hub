@@ -121,3 +121,5 @@ All writes go through internal/fs, keeping POSIX private permissions and Windows
 - `kander check`: checks both intents and indexes; a successful zero-card publication does not disappear either. It reports incomplete publications, duplicate/missing/conflicting entries, and hash, language, membership, and predecessor errors, while keeping its original state scope.
 
 Evidence lives in the local kanban board; it does not enter Git and is not deleted when temporary reports are cleaned up.
+
+The board evidence is the handoff boundary between sessions. A later executing agent or manager must use the card, Git history, review originals, manifests, sidecars, dispatch records, and recorded verification rather than relying on a previous conversation. A process starting successfully, a pane becoming visible, or a reviewer returning an exit status is not by itself proof of implementation, review, acceptance, or integration.
