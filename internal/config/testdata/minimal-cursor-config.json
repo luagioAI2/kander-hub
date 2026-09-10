@@ -56,6 +56,13 @@
         "large_model": "cursor-grok-4.6-xhigh",
         "small_model": "cursor-grok-4.6-high"
       },
+      "dsh": {
+        "large_effort": "max",
+        "large_model": "deepseek-v4-pro",
+        "model": "",
+        "small_effort": "high",
+        "small_model": "deepseek-v4-flash"
+      },
       "grok": {
         "large_effort": "xhigh",
         "large_model": "",
@@ -75,6 +82,10 @@
       },
       "cursor": {
         "model": "cursor-grok-4.6-xhigh"
+      },
+      "dsh": {
+        "effort": "max",
+        "model": "deepseek-v4-flash"
       },
       "grok": {
         "effort": "high",

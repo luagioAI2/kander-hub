@@ -16,6 +16,10 @@ func applyAgentDelivery(plan *LaunchPlan, cfg *config.Config, agent string) erro
 	} else {
 		plan.PromptDelivery = config.PromptDelivery{Mode: "argv"}
 	}
+	// DSH's sandbox/approval mode is only configurable through the
+	// DSH_PERMISSION_MODE environment variable its profile reads, so hand it
+	// to every launch path the same way other agents get their bypass flags.
+	applyAgentLaunchEnv(plan, agent)
 	return rejectPaneDirectLauncher(*plan)
 }
 

@@ -1,0 +1,66 @@
+{
+  "schema_version": 1,
+  "path": "dsh",
+  "process_name": "dsh",
+  "args": {
+    "start": [
+      "--profile",
+      "tui"
+    ],
+    "resume": [
+      "--profile",
+      "tui",
+      "--resume",
+      "{session}"
+    ],
+    "review": [
+      "--profile",
+      "headless",
+      "--model",
+      "{model}",
+      "--effort",
+      "{effort}"
+    ]
+  },
+  "session": {
+    "mode": "generated"
+  },
+  "prompt_delivery": {
+    "mode": "pane",
+    "ready": {
+      "match": "dsh >",
+      "timeout_ms": 80000
+    }
+  },
+  "exit_command": "/exit",
+  "display_name": "DSH",
+  "supports_effort": true,
+  "review": {
+    "env": {
+      "DSH_HOME": "{home}"
+    },
+    "cwd": "root",
+    "home_env": "DSH_HOME",
+    "home_policy": "required",
+    "output_name": "output.txt",
+    "inspection": "Use only read-only inspection: read, search, and shell commands that do not write. Never create, modify, or delete any file; the review gate fails if HEAD moves or the worktree is dirty.",
+    "spawns_helpers": false,
+    "snapshot_spec": false,
+    "stdin": "instruction",
+    "output": {
+      "source": "file",
+      "parse": "raw"
+    }
+  },
+  "rules_target": {
+    "global": ".dsh/AGENTS.md",
+    "project": "AGENTS.md"
+  },
+  "rules_integration": "markdown-reference",
+  "large_model": "deepseek-v4-pro",
+  "small_model": "deepseek-v4-flash",
+  "large_effort": "max",
+  "small_effort": "high",
+  "model": "deepseek-v4-flash",
+  "effort": "max"
+}
