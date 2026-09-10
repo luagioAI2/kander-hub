@@ -346,12 +346,13 @@ func paneLauncher(launcher string) bool {
 
 // launchInvocation picks the invocation form by launcher: a terminal container
 // only takes one line, so argv has to survive being parsed by a shell again;
-// foreground and console spawn directly and keep native argv.
+// foreground and console spawn directly and keep native argv. The plan's extra
+// environment (LaunchPlan.Env) is merged over the inherited environment.
 func launchInvocation(plan LaunchPlan, program process.AgentProgram, arguments []string) (process.ProcessInvocation, error) {
 	if paneLauncher(plan.Launcher) {
-		return newShellInvocation(program, arguments, nil)
+		return newShellInvocation(program, arguments, plan.Env)
 	}
-	return newInvocation(program, arguments, nil)
+	return newInvocation(program, arguments, plan.Env)
 }
 
 // paneCommand renders one process invocation as a single line the terminal

@@ -127,6 +127,7 @@ func commandDecompose(args DecomposeArgs) error {
 	if err != nil {
 		return err
 	}
+	applyAgentLaunchEnv(&plan, agentName)
 	program, err := requireAgentProgram(agentName)
 	if err != nil {
 		return err

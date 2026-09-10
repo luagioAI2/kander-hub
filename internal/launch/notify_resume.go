@@ -48,6 +48,7 @@ func NotifyViaResume(root string, entry board.Entry, originalText, message strin
 	if err != nil {
 		return ResumeLaunch{}, err
 	}
+	applyAgentLaunchEnv(&plan, session.Agent)
 	program, err := requireAgentProgram(session.Agent)
 	if err != nil {
 		return ResumeLaunch{}, err

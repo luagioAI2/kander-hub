@@ -337,6 +337,26 @@ func discoverNewCodexSession(taskID string, previous map[string]struct{}) (strin
 	}
 }
 
+// applyAgentLaunchEnv fills the plan's extra environment for agents whose
+// launch contract needs one. Only DSH needs it today (see dshLaunchEnv).
+func applyAgentLaunchEnv(plan *LaunchPlan, agent string) {
+	if agent == "dsh" {
+		plan.Env = dshLaunchEnv()
+	}
+}
+
+// dshLaunchEnv returns the environment kander must set for a launched DSH
+// agent. DSH's sandbox and approval behaviour is not reachable through flags —
+// the tui profile reads DSH_PERMISSION_MODE and maps it to a sandbox/approval
+// preset (danger-full-access also disables approval prompts). Kander launches
+// DSH to drive the whole board workflow: writing task files to /tmp,
+// pre-creating sessions under ~/.dsh, and opening tmux windows are all part of
+// the launch contract, so the agent runs with the same unrestricted mode the
+// other supported agents get through their own bypass flags.
+func dshLaunchEnv() map[string]string {
+	return map[string]string{"DSH_PERMISSION_MODE": "danger-full-access"}
+}
+
 func agentArguments(agent string, model map[string]string, kind string, session AgentSession, resume bool) ([]string, error) {
 	scale := "small"
 	if kind == "large" {

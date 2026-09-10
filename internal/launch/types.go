@@ -56,6 +56,12 @@ type LaunchPlan struct {
 	// single live window instead of piling up orphans.
 	ReuseWindow string
 	ReusePane   string
+	// Env, when set, is merged into the launched agent process environment on
+	// top of the inherited environment. Used to hand per-agent runtime knobs
+	// to agents kander cannot reach through flags — notably DSH, whose
+	// sandbox/approval mode is only configurable through the
+	// DSH_PERMISSION_MODE environment variable its profile reads.
+	Env map[string]string
 }
 
 // LaunchOutcome is the process or terminal address of one launch.
