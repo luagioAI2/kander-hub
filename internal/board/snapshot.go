@@ -1,104 +1,21 @@
 package board
 
-import "errors"
+import (
+	"context"
+)
 
-// Scan obtains a stable directory view and shared task locks before attaching
-// versions. Mutations of unrelated cards may run concurrently.
-func Scan(root string) (b Board, err error) {
-	locks, err := acquire(root, LockScope{ReadOnly: true})
-	if err != nil {
-		return b, err
-	}
-	defer func() { err = errors.Join(err, locks.close()) }()
-	b, err = scan(root)
-	if err != nil {
-		return b, err
-	}
-	ids := make([]string, 0, len(b.Entries))
-	for id := range b.Entries {
-		ids = append(ids, id)
-	}
-	ids, err = orderedIDs(ids, false)
-	if err != nil {
-		return b, err
-	}
-	for _, id := range ids {
-		if err = locks.take(root, control(root, "locks", id+".lock"), true); err != nil {
-			return b, err
-		}
-	}
-	if err = pending(root, ids); err != nil {
-		return b, err
-	}
-	b.documents = make(map[string]string, len(b.Entries))
-	b.documentErrors = make(map[string]error)
-	for id, e := range b.Entries {
-		v, er := revision(root, id)
-		if er != nil {
-			return b, er
-		}
-		text, er := readDocument(e)
-		if er != nil {
-			b.documentErrors[id] = er
-			e.Version = &Version{revision: v}
-			b.Entries[id] = e
-			continue
-		}
-		b.documents[id] = text
-		e = attachSize(e, text)
-		e.Version = &Version{revision: v}
-		b.Entries[id] = e
-	}
-	// Also identify interrupted entry creation, whose task is not visible yet.
-	records, err := operationRecords(root)
-	if err != nil {
-		return b, err
-	}
-	for _, rec := range records {
-		if rec.Phase == "prepared" && (len(rec.Entries) > 0 || len(rec.Migrations) > 0) {
-			return b, kanbanError("board.transaction_pending", rec.ID)
-		}
-	}
-	return b, nil
+// Scan reads a coordinated committed view with blocking lock acquisition.
+func Scan(root string) (Board, error) { return ScanContext(context.Background(), root) }
+
+// ScanWithWarnings captures a board and routes journal advisories to the log.
+// Entries retain this operation-local log through their version cursors.
+func ScanWithWarnings(root string, warnings *WarningLog) (Board, error) {
+	return scanContext(context.Background(), root, nil, false, warnings)
 }
 
-// ScanTargets reads selected identities with the same visibility guarantees as Scan.
-func ScanTargets(root string, values []string) (b Board, err error) {
-	ids := make([]string, len(values))
-	for i, v := range values {
-		ids[i], err = NormalizeTaskID(v)
-		if err != nil {
-			return b, err
-		}
-	}
-	err = WithTransaction(root, LockScope{Tasks: ids, ReadOnly: true}, func(tx *Transaction) error {
-		var e error
-		b, e = scanTargets(root, ids)
-		if e != nil {
-			return e
-		}
-		b.documents = make(map[string]string, len(b.Entries))
-		b.documentErrors = make(map[string]error)
-		for id, entry := range b.Entries {
-			v, er := revision(root, id)
-			if er != nil {
-				return er
-			}
-			text, er := readDocument(entry)
-			if er != nil {
-				b.documentErrors[id] = er
-				entry.Version = &Version{revision: v}
-				b.Entries[id] = entry
-				continue
-			}
-			b.documents[id] = text
-			entry = attachSize(entry, text)
-			entry.Version = &Version{revision: v}
-			b.Entries[id] = entry
-		}
-		return nil
-	})
-	return b, err
+// ScanTargets reads only selected identities with blocking lock acquisition.
+func ScanTargets(root string, values []string) (Board, error) {
+	return ScanTargetsContext(context.Background(), root, values)
 }
 
 // ReadDocument reads a committed revision and rejects an Entry invalidated by a
@@ -108,7 +25,7 @@ func ReadDocument(entry Entry) (string, error) {
 		entry.Version.mu.Lock()
 		defer entry.Version.mu.Unlock()
 	}
-	s, err := ReadSnapshot(boardRootFromEntry(entry), entry.TaskID)
+	s, err := ReadSnapshotWithWarnings(boardRootFromEntry(entry), entry.TaskID, entryWarningLog(entry))
 	if err != nil {
 		return "", err
 	}
@@ -135,13 +52,25 @@ func managedMutation(root string, entry Entry, text, state string) error {
 	}
 	entry.Version.mu.Lock()
 	defer entry.Version.mu.Unlock()
-	err := WithTransaction(root, LockScope{Tasks: []string{entry.TaskID}, ExclusiveBoard: state != "" && state != entry.State}, func(tx *Transaction) error {
+	err := WithTransaction(root, LockScope{Groups: []string{taskStartGroup}, Tasks: []string{entry.TaskID}, ExclusiveBoard: state != "" && state != entry.State, warnings: entryWarningLog(entry)}, func(tx *Transaction) error {
 		s, err := tx.Expect(entry.TaskID, entry.State, entry.Version.revision)
 		if err != nil {
 			return err
 		}
+		if err = tx.requireExecution(s, entry.Version.authorization, false); err != nil {
+			return err
+		}
+		if err = tx.requireFullExecution(s); err != nil {
+			return err
+		}
+		if authFrom(text) != authFrom(s.Text) {
+			return dispatchError(entry.TaskID)
+		}
 		if s.Entry.Path != entry.Path {
 			return kanbanError("board.transaction_conflict", entry.TaskID)
+		}
+		if err = stageTaskStart(tx, s, text, state); err != nil {
+			return err
 		}
 		if err = tx.Put(entry.TaskID, "spec.md", text); err != nil {
 			return err
@@ -166,6 +95,10 @@ type MoveOptions struct {
 	Decision         string
 	DuplicateOf      string
 	ExpectedRevision *uint64
+	Authorization    ExecutionAuthorization
+	DeliveryCommit   string
+	Disposition      *ArtifactReference
+	Replayed         *bool
 }
 
 // MoveEntry preserves the existing API for callers already holding a snapshot.
@@ -184,11 +117,12 @@ func MoveWithOptions(entry Entry, root, target string, options MoveOptions) (mov
 	}
 	scope := LockScope{Tasks: []string{entry.TaskID}, ExclusiveBoard: true}
 	if target == "done" {
-		scope, err = reviewGateScope(root, entry.TaskID, true)
+		scope, err = reviewGateScope(root, entry.TaskID, true, entryWarningLog(entry))
 		if err != nil {
 			return moved, err
 		}
 	}
+	scope.warnings = entryWarningLog(entry)
 	err = WithTransaction(root, scope, func(tx *Transaction) error {
 		s, e := tx.Snapshot(entry.TaskID)
 		if e != nil {
@@ -197,7 +131,18 @@ func MoveWithOptions(entry Entry, root, target string, options MoveOptions) (mov
 		if s.Entry.State != entry.State || s.Entry.Path != entry.Path || (entry.Version != nil && s.Revision != entry.Version.revision) || (options.ExpectedRevision != nil && s.Revision != *options.ExpectedRevision) {
 			return kanbanError("board.transaction_conflict", entry.TaskID)
 		}
-		if !allowedMove(entry.State, target) {
+		replayed, e := stageDispatchMove(tx, s, target, options)
+		if e != nil {
+			return e
+		}
+		if options.Replayed != nil {
+			*options.Replayed = replayed
+		}
+		if replayed {
+			moved = s.Entry
+			return nil
+		}
+		if !allowedMove(entry.State, target) && !(options.Authorization.DispatchID != "" && target == "working" && entry.State == "working") {
 			return kanbanError("board.move_not_allowed", entry.State, target)
 		}
 		updated, e := moveMetadata(s.Text, entry.State, target, options)
@@ -231,7 +176,7 @@ func MoveWithOptions(entry Entry, root, target string, options MoveOptions) (mov
 		if moved.IsDirectory() {
 			moved.Document = joinBoard(moved.Path, "spec.md")
 		}
-		moved.Version = &Version{revision: s.Revision + 1}
+		moved.Version = &Version{revision: s.Revision + 1, authorization: authFrom(updated), warnings: entryWarningLog(entry)}
 		return nil
 	})
 	return moved, err

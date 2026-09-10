@@ -243,6 +243,12 @@ func tmuxLaunch(tmux, session string, create bool, cwd, name string) cmdResult {
 }
 
 func tmuxStartPane(tmux, pane, command string) error {
+	if !runtimeWindows() {
+		// tmux may wrap the command in default-shell -c. Shells such as dash
+		// do not optimize the last command into exec, leaving the shell as
+		// pane_current_command and breaking agent liveness checks.
+		command = "exec " + command
+	}
 	res := tmuxCapture(tmux, "respawn-pane", "-k", "-t", pane, command)
 	if res.Code != 0 {
 		detail := strings.TrimSpace(res.Stderr)
@@ -299,7 +305,14 @@ func tmuxNotifyTarget(tmux, pane string, session AgentSession, timeout time.Dura
 	if facts.InMode != "0" {
 		return launchError("launch.tmux_pane_is_in_copy_mode", pane)
 	}
-	expected := filepathBase(configAgentExe(session.Agent))
+	cfg, err := loadEffective()
+	if err != nil {
+		return err
+	}
+	if !config.HasAgent(cfg, session.Agent) {
+		return launchError("launch.unsupported_agent", session.Agent)
+	}
+	expected := config.AgentFor(cfg, session.Agent).ProcessName
 	if facts.Command != expected {
 		return launchError(
 			"launch.tmux_foreground_process_mismatch_expected_actual", expected, orNA(facts.Command),
@@ -328,14 +341,6 @@ func orNA(v string) string {
 		return "N/A"
 	}
 	return v
-}
-
-func configAgentExe(agent string) string {
-	return lookPathName(agent)
-}
-
-func lookPathName(agent string) string {
-	return config.AgentExecutableName(agent)
 }
 
 // paneLauncher reports whether this launcher hands the agent to a terminal

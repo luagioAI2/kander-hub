@@ -28,23 +28,24 @@ type ReviewWaiver struct {
 // ReviewDisposition is an immutable original author's observation. Revisions append
 // using PreviousRecordID; the previous original remains available and attributable.
 type ReviewDisposition struct {
-	SubmittedRevision uint64        `json:"submitted_revision,omitempty"`
-	RecordID          string        `json:"record_id"`
-	PreviousRecordID  string        `json:"previous_record_id,omitempty"`
-	RunID             string        `json:"run_id"`
-	FindingID         string        `json:"finding_id"`
-	BatchID           string        `json:"batch_id"`
-	TaskID            string        `json:"task_id"`
-	Author            string        `json:"author"`
-	RecordedAt        string        `json:"recorded_at"`
-	ReportHash        string        `json:"report_hash"`
-	Original          string        `json:"original"`
-	Status            string        `json:"status"`
-	Basis             string        `json:"basis"`
-	FixCommit         string        `json:"fix_commit,omitempty"`
-	Mechanical        string        `json:"mechanical,omitempty"`
-	Verification      string        `json:"verification,omitempty"`
-	Waiver            *ReviewWaiver `json:"waiver,omitempty"`
+	Authorization     *ExecutionAuthorization `json:"authorization,omitempty"`
+	SubmittedRevision uint64                  `json:"submitted_revision,omitempty"`
+	RecordID          string                  `json:"record_id"`
+	PreviousRecordID  string                  `json:"previous_record_id,omitempty"`
+	RunID             string                  `json:"run_id"`
+	FindingID         string                  `json:"finding_id"`
+	BatchID           string                  `json:"batch_id"`
+	TaskID            string                  `json:"task_id"`
+	Author            string                  `json:"author"`
+	RecordedAt        string                  `json:"recorded_at"`
+	ReportHash        string                  `json:"report_hash"`
+	Original          string                  `json:"original"`
+	Status            string                  `json:"status"`
+	Basis             string                  `json:"basis"`
+	FixCommit         string                  `json:"fix_commit,omitempty"`
+	Mechanical        string                  `json:"mechanical,omitempty"`
+	Verification      string                  `json:"verification,omitempty"`
+	Waiver            *ReviewWaiver           `json:"waiver,omitempty"`
 }
 type dispositionLedger struct {
 	Assignment ReviewAssignment    `json:"assignment"`
@@ -92,7 +93,10 @@ func runFindings(tx *Transaction, run ReviewRun) (findings ReviewFindings, err e
 	}
 	return mapping.Findings, nil
 }
-func reviewRunForMutation(tx *Transaction, runID string) (run ReviewRun, err error) {
+
+// reviewRunForConsumption validates the successful immutable run and every
+// publication without requiring its batch to remain open for new mutations.
+func reviewRunForConsumption(tx *Transaction, runID string) (run ReviewRun, err error) {
 	ok, err := readReviewJSON(tx, reviewRunName(runID), &run)
 	if err != nil {
 		return
@@ -100,11 +104,17 @@ func reviewRunForMutation(tx *Transaction, runID string) (run ReviewRun, err err
 	if !ok || run.RunID != runID || run.ExecutionStatus != "ok" {
 		return run, reviewError("successful run required")
 	}
-	if err = verifyPublishedReview(tx, run); err != nil {
+	err = verifyPublishedReview(tx, run)
+	return
+}
+
+func reviewRunForMutation(tx *Transaction, runID string) (run ReviewRun, err error) {
+	run, err = reviewRunForConsumption(tx, runID)
+	if err != nil {
 		return
 	}
 	var closed ReviewClosure
-	ok, err = readReviewJSON(tx, closureName(run.BatchID), &closed)
+	ok, err := readReviewJSON(tx, closureName(run.BatchID), &closed)
 	if err == nil && ok {
 		err = reviewError("batch already closed")
 	}
@@ -277,6 +287,16 @@ func SubmitReviewDisposition(root string, d ReviewDisposition, expectedRevision 
 		}
 		s, err := tx.Expect(d.TaskID, "working", expectedRevision)
 		if err != nil {
+			return err
+		}
+		authorization := ExecutionAuthorization{}
+		if d.Authorization != nil {
+			authorization = *d.Authorization
+		}
+		if err = tx.requireExecution(s, authorization, true); err != nil {
+			return err
+		}
+		if err = tx.requireFullExecution(s); err != nil {
 			return err
 		}
 		if MetadataFrom(s.Text, FieldOwner) != d.Author {

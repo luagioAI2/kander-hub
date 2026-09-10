@@ -7,7 +7,23 @@ func (s *Session) SetRules(rules config.Rules) error {
 	if err := config.ValidateRules(rules); err != nil {
 		return err
 	}
+	previous := s.Config.Rules.Clone()
+	if s.EditingOverlay() {
+		return s.applyOverlayEdit(func(candidate map[string]any) {
+			for _, module := range config.RuleModules {
+				if previous[module] != rules[module] {
+					config.OverlaySet(candidate, rules[module], "rules", module)
+				}
+			}
+		})
+	}
 	s.Config.Rules = rules.Clone()
+	s.ScopeDirty = true
+	for _, module := range config.RuleModules {
+		if previous[module] != rules[module] {
+			s.syncScopeRaw([]string{"rules", module}, rules[module])
+		}
+	}
 	return nil
 }
 

@@ -62,22 +62,23 @@ func (p *optionsPanel) rulesGroup(bind *formBinding) *huh.Group {
 	bind.addField(huh.NewSelect[string]().Title(t("rules.selection")).
 		Options(options...).
 		Inline(true).Value(&bind.rulePreset))
-	bind.addRuleFields(p.session.Config.Rules, workflowRuleModules)
+	bind.addRuleFields(p, p.session.Config.Rules, workflowRuleModules)
 	bind.addSpacer()
 	bind.formFields = append(bind.formFields, huh.NewNote().Title(t("rules.independent")))
-	bind.addRuleFields(p.session.Config.Rules, independentRuleModules)
+	bind.addRuleFields(p, p.session.Config.Rules, independentRuleModules)
 	bind.formFields = append(bind.formFields, huh.NewNote().Description(t("rules.contract_notice")))
 	return huh.NewGroup(bind.formFields...)
 }
 
-func (bind *formBinding) addRuleFields(rules config.Rules, modules []string) {
+func (bind *formBinding) addRuleFields(p *optionsPanel, rules config.Rules, modules []string) {
 	for _, module := range modules {
 		enabled := rules[module]
 		bind.rules[module] = &enabled
 		bind.fieldIndex["rules:"+module] = bind.focusable
-		bind.addField(huh.NewConfirm().Title(config.RuleLabel(module)).
+		bind.addField(huh.NewConfirm().Title(p.inheritTitle(config.RuleLabel(module), formatBool(enabled), "rules", module)).
 			Affirmative(t("rules.on")).Negative(t("rules.off")).
 			Inline(true).Value(&enabled))
+		bind.addRestore(p, formatBool(enabled), "rules", module)
 	}
 }
 
@@ -114,9 +115,14 @@ func (b *formBinding) applyRules(p *optionsPanel) {
 			p.rebuildAt(focus)
 			return
 		}
+		// Raw merges may change inherited siblings as well as the edited rule.
+		for module, value := range b.rules {
+			*value = p.session.Config.Rules[module]
+		}
 		p.markDirty()
+		p.rebuildAt(focus)
 	}
-	if presetChanged || matchWorkflowPreset(rules) != b.rulePreset {
+	if presetChanged || matchWorkflowPreset(p.session.Config.Rules) != b.rulePreset {
 		p.rebuildAt(focus)
 	}
 }

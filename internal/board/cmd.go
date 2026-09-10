@@ -60,23 +60,6 @@ func takeValueFlag(args []string, name string) (rest []string, value string, fou
 	return rest, value, found, nil
 }
 
-// defaultCardLanguage is the agent_language of the current scope's config; without a config file it is
-// derived from the effective interface language, and an invalid config is an error rather than a guess.
-func defaultCardLanguage() (string, error) {
-	exists, err := config.Exists()
-	if err != nil {
-		return "", err
-	}
-	if !exists {
-		return config.DefaultAgentLanguage(config.ResolveLanguage()), nil
-	}
-	cfg, err := config.Load(false)
-	if err != nil {
-		return "", err
-	}
-	return cfg.AgentLanguage, nil
-}
-
 func takeFlag(args []string, name string) ([]string, bool) {
 	out := make([]string, 0, len(args))
 	found := false
@@ -234,11 +217,12 @@ func RunNew(args []string) int {
 	}
 	kind, slug := args[0], args[1]
 	title := strings.Join(args[2:], " ")
+	cfg, err := config.Load(false)
+	if err != nil {
+		return fail(err)
+	}
 	if !languageGiven {
-		language, err = defaultCardLanguage()
-		if err != nil {
-			return fail(err)
-		}
+		language = cfg.AgentLanguage
 	}
 	language, err = config.ValidateAgentLanguage(language)
 	if err != nil {
@@ -263,14 +247,19 @@ func RunNew(args []string) int {
 // RunMove implements kander move.
 func RunMove(args []string) int {
 	values := map[string]string{}
-	for _, name := range []string{"--owner", "--result", "--reason", "--decision", "--duplicate-of", "--expect-revision"} {
+	for _, name := range []string{"--owner", "--result", "--reason", "--decision", "--duplicate-of", "--expect-revision", "--dispatch-id", "--execution-epoch", "--delivery-commit", "--disposition"} {
 		var err error
 		args, values[name], _, err = takeValueFlag(args, name)
 		if err != nil {
 			return usageFail("move", "board.option_requires_a_value", name)
 		}
 	}
-	options := MoveOptions{Owner: values["--owner"], Result: values["--result"], Reason: values["--reason"], Decision: values["--decision"], DuplicateOf: values["--duplicate-of"]}
+	authorization, err := parseExecutionAuthorization(values)
+	if err != nil {
+		return fail(err)
+	}
+	replayed := false
+	options := MoveOptions{Authorization: authorization, DeliveryCommit: values["--delivery-commit"], Replayed: &replayed, Owner: values["--owner"], Result: values["--result"], Reason: values["--reason"], Decision: values["--decision"], DuplicateOf: values["--duplicate-of"]}
 	if raw := values["--expect-revision"]; raw != "" {
 		v, e := strconv.ParseUint(raw, 10, 64)
 		if e != nil {
@@ -297,11 +286,27 @@ func RunMove(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
+	if values["--disposition"] != "" {
+		options.Disposition = &ArtifactReference{TaskID: entry.TaskID, Path: values["--disposition"]}
+	}
 	moved, err := MoveWithOptions(entry, root, args[1], options)
 	if err != nil {
 		return fail(err)
 	}
-	fmt.Println(moved.Path)
+	if authorization.DispatchID != "" {
+		d, err := ReadDispatch(root, entry.TaskID, authorization.DispatchID)
+		if err != nil {
+			return fail(err)
+		}
+		if err := json.NewEncoder(os.Stdout).Encode(struct {
+			Dispatch Dispatch `json:"dispatch"`
+			Replayed bool     `json:"replayed"`
+		}{d, replayed}); err != nil {
+			return fail(err)
+		}
+	} else {
+		fmt.Println(moved.Path)
+	}
 	return 0
 }
 

@@ -25,7 +25,9 @@ func loadPrefs() uiPrefs {
 	return prefsFromConfig(cfg.TUI)
 }
 
-// savePrefs writes the UI preferences to disk and returns the values actually written, so the caller can sync the options session baseline.
+// savePrefs writes the caller-provided UI preferences into the scope
+// config.json as a whole TUI section. Callers must pass unmerged scope
+// values; this function does not filter overlay-only fields.
 func savePrefs(prefs uiPrefs) (config.TUI, error) {
 	value := prefsConfig(prefs)
 	_, err := config.Update(func(cfg *config.Config) error {
@@ -60,8 +62,13 @@ func prefsConfig(prefs uiPrefs) config.TUI {
 }
 
 // saveColumns remembers how many columns the user wants on screen.
+// Only Columns is written so overlay-only TUI keys stay out of the scope file.
 func saveColumns(count int) (config.TUI, error) {
-	prefs := loadPrefs()
-	prefs.Columns = clampColumns(count)
-	return savePrefs(prefs)
+	var written config.TUI
+	_, err := config.Update(func(cfg *config.Config) error {
+		cfg.TUI.Columns = clampColumns(count)
+		written = cfg.TUI
+		return nil
+	})
+	return written, err
 }

@@ -239,19 +239,17 @@ func TestModelConfigAndEnvOverride(t *testing.T) {
 	assertArg(t, argv, "--model", "env-model")
 }
 
-func TestMalformedModelConfigFallsBack(t *testing.T) {
+func TestMalformedModelConfigFails(t *testing.T) {
 	h := newCodexHarness(t)
 	if err := os.WriteFile(os.Getenv("KANDER_CONFIG"), []byte("{invalid"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	code, _, err := h.defaultReview()
-	if code != 0 {
-		t.Fatalf("code=%d err=%s", code, err)
+	if code == 0 {
+		t.Fatal("invalid config must fail review")
 	}
-	argv := strings.Split(strings.TrimRight(readFile(t, h.argvLog), "\n"), "\n")
-	assertArg(t, argv, "--model", "gpt-5.6-sol")
-	if !contains(argv, `model_reasoning_effort="high"`) {
-		t.Fatalf("argv=%v", argv)
+	if !strings.Contains(err, "failed to read config") {
+		t.Fatalf("code=%d err=%s", code, err)
 	}
 }
 
@@ -429,13 +427,28 @@ func TestIgnoredFilesDoesNotBlock(t *testing.T) {
 	}
 }
 
-func TestDefaultLocaleReportsChineseUsage(t *testing.T) {
+func TestDefaultLocaleReportsEnglishUsage(t *testing.T) {
 	h := newCodexHarness(t)
 	t.Setenv("KANDER_LANG", "")
 	t.Setenv("KANDER_LANG_CLI", "")
 	t.Setenv("LC_ALL", "")
 	t.Setenv("LC_MESSAGES", "")
 	t.Setenv("LANG", "")
+	config.BindConfigLanguage(nil)
+	code, _, err := captureRun(t, nil)
+	if code != 2 || !strings.Contains(err, "Usage: kander review") {
+		t.Fatalf("code=%d err=%q", code, err)
+	}
+	_ = h
+}
+
+func TestChineseLocaleReportsChineseUsage(t *testing.T) {
+	h := newCodexHarness(t)
+	t.Setenv("KANDER_LANG", "")
+	t.Setenv("KANDER_LANG_CLI", "")
+	t.Setenv("LC_ALL", "")
+	t.Setenv("LC_MESSAGES", "")
+	t.Setenv("LANG", "zh_CN.UTF-8")
 	config.BindConfigLanguage(nil)
 	code, _, err := captureRun(t, nil)
 	if code != 2 || !strings.Contains(err, "用法: kander review") {

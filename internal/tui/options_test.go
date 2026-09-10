@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -9,7 +10,9 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
+	"github.com/muesli/termenv"
 
 	"github.com/dualface/kander/internal/config"
 	"github.com/dualface/kander/internal/menu"
@@ -93,10 +96,124 @@ func TestNewTestSessionForcesTemporaryConfig(t *testing.T) {
 	}
 }
 
+func useTestOptionsSession(t *testing.T) {
+	t.Helper()
+	original := newOptionsSession
+	newOptionsSession = func(existing *config.Config, _ bool) (*menu.Session, error) {
+		return menu.NewSessionForTest(existing)
+	}
+	t.Cleanup(func() { newOptionsSession = original })
+}
+
+func runOptionsLoad(t *testing.T, app *App) {
+	t.Helper()
+	if app.pendingWork == nil {
+		t.Fatal("openOptions should reload from disk")
+	}
+	work := app.pendingWork
+	app.pendingWork = nil
+	cmd := app.applyWork(work())
+	if app.Options == nil {
+		t.Fatal("options panel")
+	}
+	if app.Options.loadErr != "" {
+		return
+	}
+	if cmd != nil {
+		pumpPanel(app.Options, cmd)
+	}
+}
+
+func finishOptionsLoad(t *testing.T, app *App) {
+	t.Helper()
+	runOptionsLoad(t, app)
+	if app.Options.loadErr != "" {
+		t.Fatalf("load: %s", app.Options.loadErr)
+	}
+	if app.Options.session == nil {
+		t.Fatal("session")
+	}
+}
+
+func requireErrorFrame(t *testing.T, app *App, needles ...string) {
+	t.Helper()
+	plain := strings.ReplaceAll(ansi.Strip(app.View()), "\n", "")
+	for _, needle := range needles {
+		if strings.Contains(plain, needle) {
+			return
+		}
+	}
+	t.Fatalf("error frame missing %q:\n%s", needles, ansi.Strip(app.View()))
+}
+
+func TestOpenOptionsRequiresCompleteConfig(t *testing.T) {
+	for _, tc := range []struct {
+		name, body string
+	}{
+		{"missing", ""},
+		{"invalid-json", "{broken"},
+		{"invalid-schema", `{"language":"xx"}`},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			app := newPanelApp(t)
+			path := filepath.Join(t.TempDir(), "config.json")
+			t.Setenv(config.EnvConfig, path)
+			if tc.body != "" {
+				if err := os.WriteFile(path, []byte(tc.body), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			app.openOptions()
+			runOptionsLoad(t, app)
+			if app.Options == nil || app.Options.loadErr == "" || app.Options.form != nil || app.Options.session != nil {
+				t.Fatal("Load failure must stay on the error frame without opening the form")
+			}
+			switch tc.name {
+			case "missing":
+				requireErrorFrame(t, app, "config does not exist", "配置不存在", "設定が存在しません")
+			case "invalid-json":
+				requireErrorFrame(t, app, "failed to read config", "读取配置失败", "設定の読み取りに失敗しました")
+			default:
+				plain := strings.ReplaceAll(ansi.Strip(app.View()), "\n", "")
+				if !strings.Contains(plain, "schema") && !strings.Contains(plain, "language") {
+					t.Fatalf("invalid schema frame:\n%s", ansi.Strip(app.View()))
+				}
+			}
+		})
+	}
+}
+
+func TestReopenOptionsRequiresCompleteConfig(t *testing.T) {
+	app := newPanelApp(t)
+	_ = newTestSession(t)
+	useTestOptionsSession(t)
+	app.openOptions()
+	finishOptionsLoad(t, app)
+	if app.Options == nil || app.Options.form == nil || app.Options.loadErr != "" {
+		t.Fatal("valid config should open the form")
+	}
+	app.Options.close()
+	if app.Options != nil || app.Session == nil {
+		t.Fatal("close should keep the cached session")
+	}
+	path := os.Getenv(config.EnvConfig)
+	if err := os.WriteFile(path, []byte("{broken"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app.openOptions()
+	runOptionsLoad(t, app)
+	if app.Options == nil || app.Options.loadErr == "" || app.Options.form != nil {
+		t.Fatal("reopen after a broken config must stay on the error frame")
+	}
+	requireErrorFrame(t, app, "failed to read config", "读取配置失败", "設定の読み取りに失敗しました")
+}
+
 func TestOpenOptionsFromBoardKey(t *testing.T) {
 	app := newPanelApp(t)
-	app.Session = newTestSession(t)
+	_ = newTestSession(t)
+	useTestOptionsSession(t)
 	app.HandleKey("o")
+	finishOptionsLoad(t, app)
 	if app.Options == nil {
 		t.Fatal("o should open the options panel")
 	}
@@ -107,8 +224,10 @@ func TestOpenOptionsFromBoardKey(t *testing.T) {
 
 func TestOpenOptionsAtInterface(t *testing.T) {
 	app := newPanelApp(t)
-	app.Session = newTestSession(t)
+	_ = newTestSession(t)
+	useTestOptionsSession(t)
 	app.openOptionsAt(sectionInterface)
+	finishOptionsLoad(t, app)
 	if app.Options == nil || app.Options.current != sectionInterface {
 		t.Fatal("panel should start in the interface section")
 	}
@@ -157,6 +276,8 @@ func openPanel(t *testing.T, initial ...*config.Config) (*App, *optionsPanel) {
 	panel := &optionsPanel{app: app, spinner: newPanelSpinner(app)}
 	app.Options = panel
 	panel.session = newTestSession(t, initial...)
+	panel.loadedTUI = panel.session.Config.TUI
+	panel.appliedTUI = nil
 	pumpPanel(panel, panel.openRoot())
 	return app, panel
 }
@@ -220,8 +341,50 @@ func TestEnterSavesReviewSection(t *testing.T) {
 	}
 }
 
+func TestOptionsThemeSelectListsAllThemes(t *testing.T) {
+	app, panel := openPanel(t)
+	pumpPanel(panel, panel.dispatch(sectionInterface))
+	want := []string{"auto", "light", "light-warm", "light-contrast", "dark", "dark-soft", "dark-contrast"}
+	if strings.Join(themes, ",") != strings.Join(want, ",") {
+		t.Fatalf("themes=%v", themes)
+	}
+	drivePanel(panel, keyMsg("down"))
+	drivePanel(panel, keyMsg("down"))
+	for _, name := range want {
+		if app.Theme != name {
+			// Walk until this theme is selected so its label is visible.
+			for i := 0; i < len(want) && app.Theme != name; i++ {
+				drivePanel(panel, keyMsg("right"))
+			}
+		}
+		if app.Theme != name {
+			t.Fatalf("could not select %s, stuck at %s", name, app.Theme)
+		}
+		_, popup := panel.view()
+		if !strings.Contains(ansi.Strip(popup), app.Context.themeLabel(name)) {
+			t.Fatalf("dropdown missing %s label %q in %q", name, app.Context.themeLabel(name), ansi.Strip(popup))
+		}
+	}
+	previous := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	defer lipgloss.SetColorProfile(previous)
+	for _, name := range want {
+		if name == "auto" {
+			continue
+		}
+		app.Theme = name
+		_, popup := panel.view()
+		bg := trueColorSeq(string(themePalette(name).Bg), false)
+		if !strings.Contains(popup, bg) {
+			t.Fatalf("options panel %s missing canvas %s", name, bg)
+		}
+	}
+}
+
 func TestThemeChangeKeepsInterfaceState(t *testing.T) {
 	app, panel := openPanel(t)
+	panel.session.Config.TUI.Theme = "light"
+	panel.loadedTUI = panel.session.Config.TUI
 	app.Theme = "light"
 	pumpPanel(panel, panel.dispatch(sectionInterface))
 	if panel.bind == nil || panel.bind.theme != "light" {
@@ -239,7 +402,17 @@ func TestThemeChangeKeepsInterfaceState(t *testing.T) {
 	refresh := app.RefreshSecs
 	drivePanel(panel, keyMsg("up"))
 	for _, step := range []struct{ key, theme string }{
-		{"right", "dark"}, {"left", "light"}, {"left", "auto"}, {"right", "light"},
+		{"right", "light-warm"},
+		{"right", "light-contrast"},
+		{"right", "dark"},
+		{"right", "dark-soft"},
+		{"right", "dark-contrast"},
+		{"right", "auto"},
+		{"right", "light"},
+		{"left", "auto"},
+		{"left", "dark-contrast"},
+		{"right", "auto"},
+		{"right", "light"},
 	} {
 		drivePanel(panel, keyMsg(step.key))
 		if app.Theme != step.theme || panel.bind.theme != step.theme {
@@ -313,6 +486,7 @@ func TestInterfaceWriteDoesNotCommitOtherSessionEdits(t *testing.T) {
 	panel.session.SetReviewer("PM", "claude")
 	panel.markDirty()
 	app.Theme = "light"
+	panel.session.Config.TUI.Theme = "light"
 	panel.persistUI()
 	if app.PrefsError != "" {
 		t.Fatal(app.PrefsError)
@@ -383,10 +557,10 @@ func TestMouseClickFocusesRow(t *testing.T) {
 		t.Fatal("no focused row")
 	}
 	target := lo + 2
-	if target >= len(panel.bodyLines) {
+	if target >= len(panel.currentBodyLines()) {
 		t.Skip("popup too short for this assertion")
 	}
-	pumpPanel(panel, panel.HandleMouse(panel.bodyX+1, panel.bodyY+target, mouseBtn1Clicked))
+	pumpPanel(panel, panel.HandleMouse(panel.bodyX+1, panel.bodyY+panel.chromeLines+target, mouseBtn1Clicked))
 	moved, _, ok := focusRange(panel.currentBodyLines())
 	if !ok || moved != target {
 		t.Fatalf("click should focus row %d, focus is %d", target, moved)
@@ -471,15 +645,15 @@ func assertRootFocus(t *testing.T, panel *optionsPanel, want string) {
 	if !strings.Contains(text, focusMarker) {
 		t.Fatalf("row %d missing focus marker: %q", lo, text)
 	}
-	labels := map[string][2]string{
-		sectionInterface: {"界面", "Interface"},
-		sectionExecution: {"任务执行与模型", "Execution and models"},
-		sectionReview:    {"审核与模型", "Review and models"},
-		sectionDoctor:    {"环境检查", "Environment check"},
-		sectionSave:      {"保存并应用", "Save and apply"},
-		sectionClose:     {"关闭", "Close"},
-	}[want]
-	if !strings.Contains(text, labels[0]) && !strings.Contains(text, labels[1]) {
+	labels := map[string]string{
+		sectionInterface: uiText("tui.interface"),
+		sectionExecution: uiText("tui.execution_and_models"),
+		sectionReview:    uiText("tui.review_and_models"),
+		sectionDoctor:    uiText("tui.environment_check"),
+		sectionSave:      uiText("tui.save_and_apply"),
+		sectionClose:     uiText("tui.close_2"),
+	}
+	if !strings.Contains(text, labels[want]) {
 		t.Fatalf("focus on %q, want section %s", text, want)
 	}
 }
@@ -570,14 +744,15 @@ func TestExecutionModelInputSavesWhenAgentsMatch(t *testing.T) {
 func TestReviewModelInputSavesPMRole(t *testing.T) {
 	_, panel := openPanel(t)
 	pumpPanel(panel, panel.dispatch(sectionReview))
-	if len(panel.bind.formFields) < 3 {
-		t.Fatal("review section should have reviewer, stage, and model fields")
+	if len(panel.bind.formFields) < 4 {
+		t.Fatal("review section should have reviewer, two scale stages, and model fields")
 	}
 	before := panel.session.Config.Models.ReviewRoles["PM"]["model"]
 	drivePanel(panel, keyMsg("down"))
 	drivePanel(panel, keyMsg("down"))
-	if panel.form.GetFocusedField() != panel.bind.formFields[2] {
-		t.Fatal("two downs should focus the PM model input")
+	drivePanel(panel, keyMsg("down"))
+	if panel.form.GetFocusedField() != panel.bind.formFields[3] {
+		t.Fatal("three downs should focus the PM model input after the two scale stages")
 	}
 	typeRune(panel, 'X')
 	want := before + "X"
@@ -595,5 +770,171 @@ func TestReviewModelInputSavesPMRole(t *testing.T) {
 	}
 	if got := loaded.Models.ReviewRoles["PM"]["model"]; got != want {
 		t.Fatalf("disk PM model=%q want %q", got, want)
+	}
+}
+
+func TestReviewStagePerScaleSaves(t *testing.T) {
+	_, panel := openPanel(t)
+	pumpPanel(panel, panel.dispatch(sectionReview))
+	before, err := config.ReviewStageFor(panel.session.Config, "large", "PM")
+	if err != nil {
+		t.Fatal(err)
+	}
+	drivePanel(panel, keyMsg("down"))
+	drivePanel(panel, keyMsg("right"))
+	after, err := config.ReviewStageFor(panel.session.Config, "large", "PM")
+	if err != nil || after == before {
+		t.Fatalf("large PM stage did not change: %s -> %s (%v)", before, after, err)
+	}
+	small, err := config.ReviewStageFor(panel.session.Config, "small", "PM")
+	if err != nil || small != before {
+		t.Fatalf("small PM stage changed unexpectedly: %s (%v)", small, err)
+	}
+	drivePanel(panel, keyMsg("enter"))
+	loaded, err := config.Load(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := config.ReviewStageFor(loaded, "large", "PM")
+	if err != nil || got != after {
+		t.Fatalf("disk large PM=%s want %s (%v)", got, after, err)
+	}
+}
+
+func TestExecutableInputsDeduplicateAndPersist(t *testing.T) {
+	_, panel := openPanel(t)
+	pumpPanel(panel, panel.dispatch(sectionExecution))
+	count := 0
+	for i, field := range panel.bind.modelFields {
+		if strings.HasSuffix(field.Key(), ".process_name") {
+			count++
+			*panel.bind.modelValues[i] = "node"
+		}
+	}
+	if count != 1 {
+		t.Fatalf("duplicate process inputs: %d", count)
+	}
+	panel.bind.apply(panel)
+	drivePanel(panel, keyMsg("enter"))
+	loaded, err := config.Load(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	agent := loaded.KanbanAgents["large"]
+	if loaded.Agents[agent].ProcessName != "node" {
+		t.Fatal(loaded.Agents)
+	}
+}
+
+func writeTempOverlay(t *testing.T, dir string, payload map[string]any) (string, []byte) {
+	t.Helper()
+	path := filepath.Join(dir, config.OverlayFilename)
+	data, err := json.Marshal(payload)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return path, data
+}
+
+func TestOptionsPanelShowsOverlayNotice(t *testing.T) {
+	dir := t.TempDir()
+	writeTempOverlay(t, dir, map[string]any{"kanban_agent": "claude"})
+	t.Chdir(dir)
+	app := newPanelApp(t)
+	_ = newTestSession(t)
+	useTestOptionsSession(t)
+	app.openOptions()
+	finishOptionsLoad(t, app)
+	if !strings.Contains(app.Options.overlayNotice, ".kander-config.json") {
+		t.Fatalf("missing overlay notice text: %q", app.Options.overlayNotice)
+	}
+	_, view := app.Options.view()
+	plain := ansi.Strip(view)
+	if !strings.Contains(plain, config.OverlayFilename) || !strings.Contains(plain, config.Text("tui.base_config", "")) {
+		t.Fatalf("overlay notice not rendered:\n%s", plain)
+	}
+}
+
+func TestOptionsSaveLeavesOverlayIsolated(t *testing.T) {
+	dir := t.TempDir()
+	_, original := writeTempOverlay(t, dir, map[string]any{
+		"kanban_agent": "claude",
+		"tui":          map[string]any{"theme": "dark", "columns": 2},
+	})
+	t.Chdir(dir)
+	_, panel := openPanel(t)
+	pumpPanel(panel, panel.dispatch(sectionReview))
+	before := panel.session.Config.Reviewers["PM"]
+	drivePanel(panel, keyMsg("right"))
+	after := panel.session.Config.Reviewers["PM"]
+	if after == before {
+		t.Fatal("right arrow did not change the reviewer")
+	}
+	drivePanel(panel, keyMsg("enter"))
+	data, err := os.ReadFile(filepath.Join(dir, config.OverlayFilename))
+	if err != nil || string(data) != string(original) {
+		t.Fatalf("overlay bytes changed: %s", data)
+	}
+	scopeCfg, err := config.LoadScope(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scopeCfg.KanbanAgent == "claude" {
+		t.Fatal("TUI save wrote overlay-only kanban_agent into the scope file")
+	}
+	if scopeCfg.TUI.Theme == "dark" || scopeCfg.TUI.Columns == 2 {
+		t.Fatalf("TUI save wrote overlay-only tui values into the scope file: %+v", scopeCfg.TUI)
+	}
+	if scopeCfg.Reviewers["PM"] != after {
+		t.Fatalf("scope PM=%s want %s", scopeCfg.Reviewers["PM"], after)
+	}
+	merged, err := config.Load(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.KanbanAgent != "claude" {
+		t.Fatalf("runtime merge lost overlay: %s", merged.KanbanAgent)
+	}
+	if merged.TUI.Theme != "dark" || merged.TUI.Columns != 2 {
+		t.Fatalf("runtime merge lost overlay tui: %+v", merged.TUI)
+	}
+}
+
+func TestSaveColumnsLeavesOverlayTUIIsolated(t *testing.T) {
+	dir := t.TempDir()
+	_, original := writeTempOverlay(t, dir, map[string]any{
+		"tui": map[string]any{"theme": "dark", "columns": 6},
+	})
+	t.Chdir(dir)
+	_ = newTestSession(t)
+	if _, err := saveColumns(2); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, config.OverlayFilename))
+	if err != nil || string(data) != string(original) {
+		t.Fatalf("overlay bytes changed: %s", data)
+	}
+	scopeCfg, err := config.LoadScope(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if scopeCfg.TUI.Theme == "dark" {
+		t.Fatal("saveColumns wrote overlay-only theme into the scope file")
+	}
+	if scopeCfg.TUI.Columns != 2 {
+		t.Fatalf("scope columns=%d", scopeCfg.TUI.Columns)
+	}
+	merged, err := config.Load(true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if merged.TUI.Theme != "dark" {
+		t.Fatalf("runtime merge lost overlay theme: %s", merged.TUI.Theme)
+	}
+	if merged.TUI.Columns != 6 {
+		t.Fatalf("runtime merge lost overlay columns: %d", merged.TUI.Columns)
 	}
 }

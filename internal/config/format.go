@@ -37,7 +37,7 @@ func KanbanModelFor(entry map[string]string, scale string) string {
 	return entry["model"]
 }
 
-func FormatKanbanModelSummary(agent string, entry map[string]string) string {
+func FormatKanbanModelSummary(cfg *Config, agent string, entry map[string]string) string {
 	cliDefault := Text("config.cli_default")
 	large := KanbanModelFor(entry, "large")
 	if large == "" {
@@ -47,7 +47,7 @@ func FormatKanbanModelSummary(agent string, entry map[string]string) string {
 	if small == "" {
 		small = cliDefault
 	}
-	if agent == "cursor" {
+	if !AgentSupportsEffort(cfg, agent) {
 		return fmt.Sprintf("%s %s / %s %s",
 			Text("config.large"), large,
 			Text("config.small"), small,
@@ -76,12 +76,26 @@ func formatModelEffort(model, effort string) string {
 	return fmt.Sprintf("%s (%s)", model, effort)
 }
 
-func FormatReviewStagesSummary(stages map[string]string) string {
+func formatReviewRoleModes(stages map[string]string) string {
 	parts := make([]string, 0, len(ReviewRoles))
 	for _, role := range ReviewRoles {
 		parts = append(parts, role+"="+stages[role])
 	}
 	return strings.Join(parts, " ")
+}
+
+// FormatReviewStagesSummary returns one line when both scales match, or one line
+// per scale (large then small) when they differ.
+func FormatReviewStagesSummary(stages map[string]map[string]string) []string {
+	large := formatReviewRoleModes(stages["large"])
+	small := formatReviewRoleModes(stages["small"])
+	if large == small {
+		return []string{large}
+	}
+	return []string{
+		Text("config.large") + ": " + large,
+		Text("config.small") + ": " + small,
+	}
 }
 
 // FormatConfigLines produces the read-only human-readable output of kander config.
@@ -95,7 +109,15 @@ func FormatConfigLines(cfg *Config) ([]string, error) {
 		status = Text("config.incomplete")
 	}
 	var lines []string
+	overlayPath, overlayErr := OverlayPath("")
+	if overlayErr != nil {
+		return nil, overlayErr
+	}
+	if overlayPath != "" {
+		lines = append(lines, Text("config.overlay_file")+": "+overlayPath)
+	}
 	lines = append(lines, Text("config.welcome")+": "+status)
+	lines = append(lines, AgentWarnings(effective)...)
 	lines = append(lines, Text("config.kanban_agent")+": "+FormatKanbanAgentsSummary(effective))
 	lines = append(lines, Text("config.launcher")+": "+effective.Launcher)
 	inUse := ExecutionAgentsInUse(effective)
@@ -105,14 +127,21 @@ func FormatConfigLines(cfg *Config) ([]string, error) {
 		if len(inUse) > 1 {
 			label = " " + agent
 		}
-		lines = append(lines, Text("config.kanban_model")+label+": "+FormatKanbanModelSummary(agent, entry))
+		lines = append(lines, Text("config.kanban_model")+label+": "+FormatKanbanModelSummary(effective, agent, entry))
 	}
 	for _, role := range ReviewRoles {
 		reviewer := effective.Reviewers[role]
 		model, effort := ReviewModelFor(effective, reviewer, role)
 		lines = append(lines, role+": "+reviewer+" "+formatModelEffort(model, effort))
 	}
-	lines = append(lines, Text("config.review_stages")+": "+FormatReviewStagesSummary(effective.ReviewStages))
+	stageSummaries := FormatReviewStagesSummary(effective.ReviewStages)
+	if len(stageSummaries) == 1 {
+		lines = append(lines, Text("config.review_stages")+": "+stageSummaries[0])
+	} else {
+		for _, summary := range stageSummaries {
+			lines = append(lines, Text("config.review_stages")+" "+summary)
+		}
+	}
 	lines = append(lines, Text("rules.modules")+": "+FormatRulesSummary(effective.Rules))
 	stored := ConfiguredLanguage()
 	language := stored
@@ -130,22 +159,24 @@ func ReviewModelLines(cfg *Config, agent string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	if !contains(ReviewAgents, agent) {
-		return nil, choiceError("agent", strings.Join(ReviewAgents, ", "))
+	if !HasReviewTemplate(effective, agent) {
+		return nil, choiceError("agent", strings.Join(ReviewAgentNames(effective), ", "))
 	}
 	entry := effective.Models.Review[agent]
 	return []string{entry["model"], entry["effort"]}, nil
 }
 
-// ReviewStageLines returns auto|skip|required in PM/CSA/Hacker/QA order.
+// ReviewStageLines returns auto|skip|required for large then small, each in PM/CSA/Hacker/QA order.
 func ReviewStageLines(cfg *Config) ([]string, error) {
 	effective, err := Effective(cfg)
 	if err != nil {
 		return nil, err
 	}
-	lines := make([]string, 0, len(ReviewRoles))
-	for _, role := range ReviewRoles {
-		lines = append(lines, effective.ReviewStages[role])
+	lines := make([]string, 0, len(TaskScales)*len(ReviewRoles))
+	for _, scale := range TaskScales {
+		for _, role := range ReviewRoles {
+			lines = append(lines, effective.ReviewStages[scale][role])
+		}
 	}
 	return lines, nil
 }

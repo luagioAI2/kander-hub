@@ -63,6 +63,7 @@ func renderMarkdown(doc string, width int, theme string) []string {
 		glamour.WithStyles(markdownCanvasStyle(theme)),
 		glamour.WithWordWrap(width),
 		glamour.WithEmoji(),
+		glamour.WithColorProfile(lipgloss.ColorProfile()),
 	)
 	if err != nil {
 		return wrapText(doc, width)
@@ -85,7 +86,11 @@ func renderMarkdown(doc string, width int, theme string) []string {
 // so the detail body does not punch a patch of the raw terminal color through the screen background.
 func markdownCanvasStyle(theme string) glamansi.StyleConfig {
 	name := resolveTheme(theme)
-	src, ok := glamstyles.DefaultStyles[name]
+	key := glamstyles.LightStyle
+	if themeIsDark(name) {
+		key = glamstyles.DarkStyle
+	}
+	src, ok := glamstyles.DefaultStyles[key]
 	if !ok || src == nil {
 		src = glamstyles.DefaultStyles[glamstyles.DarkStyle]
 	}
@@ -125,6 +130,12 @@ func (a *App) detailBody(p palette) string {
 		out[i] = line
 	}
 	return strings.Join(out, "\n")
+}
+
+// panelPad puts one filled column on each side of a panel row. The spaces have to carry the theme
+// background: a bare space would punch the raw terminal color through the panel.
+func panelPad(p palette, content string) string {
+	return p.fillLine(1) + content + p.fillLine(1)
 }
 
 func renderSpans(text string, spans [][2]int, style lipgloss.Style) string {
@@ -191,12 +202,12 @@ func (a *App) renderDetailView() string {
 	}
 
 	meta := joinNonEmpty(task.TaskID, a.Context.stateLabel(task.State), a.Context.sizeLabel(task.Kind), task.Type, orUnassigned(task.Assignee, a.Context.Unassigned))
-	metaRow := a.panelRow(p, state, " "+styleFor("dim", p).Render(padLine(clipText(meta, contentWidth), contentWidth))+" ", w, true)
+	metaRow := a.panelRow(p, state, panelPad(p, styleFor("dim", p).Render(padLine(clipText(meta, contentWidth), contentWidth))), w, true)
 
 	var ruleRow string
 	if a.DetailSearching {
 		prefix := a.Context.Search + ": "
-		ruleRow = a.panelRow(p, state, " "+styleFor("search", p).Render(padLine(prefix+a.DetailQuery, contentWidth))+" ", w, true)
+		ruleRow = a.panelRow(p, state, panelPad(p, styleFor("search", p).Render(padLine(prefix+a.DetailQuery, contentWidth))), w, true)
 		a.CursorY, a.CursorX = detailRuleRow, 2+displayWidth(prefix+a.DetailQuery)
 	} else {
 		ruleRow = a.panelRow(p, state, styleFor("separator", p).Render(strings.Repeat("─", inner)), w, true)
@@ -206,7 +217,13 @@ func (a *App) renderDetailView() string {
 	a.detailView.Width, a.detailView.Height = contentWidth, bodyHeight
 	a.detailView.SetContent(a.detailBody(p))
 	a.detailView.SetYOffset(a.DetailScroll)
-	bodyLines := strings.Split(padBlock(a.detailView.View(), contentWidth, bodyHeight, p), "\n")
+	view := strings.Split(a.detailView.View(), "\n")
+	for i, line := range view {
+		// Glamour emits its document margins and the viewport its line padding outside any style,
+		// so a bare space would punch the raw terminal color through the panel.
+		view[i] = withDefaultColors(line, p.ink(p.Base))
+	}
+	bodyLines := strings.Split(padBlock(strings.Join(view, "\n"), contentWidth, bodyHeight, p), "\n")
 	rows := make([]string, 0, bodyHeight+3)
 	rows = append(rows,
 		a.panelTop(p, state, clipText(title, max(1, contentWidth-6)), "", w, true, false, false),
@@ -214,7 +231,7 @@ func (a *App) renderDetailView() string {
 		ruleRow,
 	)
 	for _, line := range bodyLines {
-		rows = append(rows, a.panelRow(p, state, " "+line+" ", w, true))
+		rows = append(rows, a.panelRow(p, state, panelPad(p, line), w, true))
 	}
 	rows = append(rows, a.panelBottom(p, state, w, true))
 

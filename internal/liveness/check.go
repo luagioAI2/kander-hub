@@ -1,12 +1,15 @@
 package liveness
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/dualface/kander/internal/board"
+	"github.com/dualface/kander/internal/config"
 )
 
 func formatReport(rep Report) string {
@@ -16,6 +19,7 @@ func formatReport(rep Report) string {
 		t("liveness.status", rep.Status),
 		t("liveness.channel", rep.Channel),
 		t("liveness.container", rep.Container),
+		t("liveness.observation", rep.ObservedAt.Format(time.RFC3339Nano), rep.ObservationValid, rep.RuntimeState),
 	}
 	if rep.NewWindow != "" {
 		fields = append(fields, t("liveness.new_address", rep.NewWindow))
@@ -62,15 +66,13 @@ func livenessLines(root string, taskIDs []string) ([]string, error) {
 	if err != nil {
 		return nil, err
 	}
-	var lines []string
+	inputs := make([]TaskInput, 0, len(entries))
 	for _, entry := range entries {
 		text, err := board.ReadDocument(entry)
-		var rep Report
-		if err != nil {
-			rep = Report{TaskID: entry.TaskID, Agent: "N/A", Status: Unknown, Channel: "unknown", Container: "N/A", Detail: err.Error()}
-		} else {
-			rep = ClassifyTask(entry, text)
-		}
+		inputs = append(inputs, TaskInput{Entry: entry, Text: text, ReadError: err})
+	}
+	var lines []string
+	for _, rep := range ClassifyTasksContext(context.Background(), inputs, BatchOptions{}) {
 		lines = append(lines, formatReport(rep))
 	}
 	return lines, nil
@@ -104,6 +106,14 @@ func RunCheck(args []string) int {
 			return 2
 		}
 		tasks = append(tasks, arg)
+	}
+	cfg, err := config.Load(false)
+	if err != nil {
+		fmt.Fprintln(os.Stderr, err)
+		return 1
+	}
+	for _, warning := range config.AgentWarnings(cfg) {
+		fmt.Fprintln(os.Stderr, warning)
 	}
 	root, err := board.BoardRoot()
 	if err != nil {

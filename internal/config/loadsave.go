@@ -50,30 +50,95 @@ func readConfigBytes(path string) ([]byte, error) {
 }
 
 func loadValidated(path string, missingOK bool) (*Config, error) {
+	cfg, _, err := loadScopeRawAt(path, missingOK)
+	return cfg, err
+}
+
+func loadScopeRawAt(path string, missingOK bool) (*Config, map[string]any, error) {
 	data, err := readConfigBytes(path)
 	if err != nil {
-		return nil, configErrorfWrap(err, "config.failed_to_read_config", path, err.Error())
+		return nil, nil, configErrorfWrap(err, "config.failed_to_read_config", path, err.Error())
 	}
 	if data == nil {
-		if missingOK {
-			return DefaultConfig(), nil
+		if !missingOK {
+			return nil, nil, configErrorf("config.config_does_not_exist", path)
 		}
-		return nil, configErrorf("config.config_does_not_exist", path)
+		cfg := DefaultConfig()
+		encoded, err := json.Marshal(cfg)
+		if err != nil {
+			return nil, nil, configErrorfWrap(err, "config.failed_to_read_config_2", err.Error())
+		}
+		raw, err := decodeJSON(encoded)
+		if err != nil {
+			return nil, nil, err
+		}
+		obj, ok := raw.(map[string]any)
+		if !ok {
+			return nil, nil, configErrorf("config.config_root_must_be_a_json_object")
+		}
+		return cfg, cloneRawObjectDeep(obj), nil
 	}
 	raw, err := decodeJSON(data)
 	if err != nil {
-		return nil, configErrorfWrap(err, "config.failed_to_read_config", path, err.Error())
+		return nil, nil, configErrorfWrap(err, "config.failed_to_read_config", path, err.Error())
 	}
-	return Validate(raw)
+	cfg, err := Validate(raw)
+	if err != nil {
+		return nil, nil, err
+	}
+	obj, ok := raw.(map[string]any)
+	if !ok {
+		return nil, nil, configErrorf("config.config_root_must_be_a_json_object")
+	}
+	return cfg, cloneRawObjectDeep(obj), nil
 }
 
-// Load reads and validates the config; with missingOK a missing file yields the default config.
-func Load(missingOK bool) (*Config, error) {
+func loadEffective(missingOK bool) (*Config, error) {
 	path, err := ConfigPath()
 	if err != nil {
 		return nil, err
 	}
-	return loadValidated(path, missingOK)
+	cfg, raw, err := loadScopeRawAt(path, missingOK)
+	if err != nil {
+		return nil, err
+	}
+	_, overlayRaw, err := readOverlay("")
+	if err != nil {
+		return nil, err
+	}
+	if overlayRaw == nil {
+		return cfg, nil
+	}
+	merged, err := mergeOverlayRaw(raw, overlayRaw)
+	if err != nil {
+		return nil, err
+	}
+	return Validate(merged)
+}
+
+// Load reads the scope config, merges a project overlay when present, and validates the result.
+// Operational commands pass missingOK=false so a missing or invalid file fails instead of
+// substituting DefaultConfig. A missing scope file yields the default config only when
+// missingOK is true, which remains for Effective, doctor repair, and write-path helpers.
+func Load(missingOK bool) (*Config, error) {
+	return loadEffective(missingOK)
+}
+
+// LoadScope reads only the current-scope config.json and never applies a project overlay.
+// Write and edit paths use this so overlay values cannot be written back into the scope file.
+func LoadScope(missingOK bool) (*Config, error) {
+	cfg, _, err := LoadScopeRaw(missingOK)
+	return cfg, err
+}
+
+// LoadScopeRaw is LoadScope plus the decoded scope object, so callers can inspect
+// explicit keys without reading the file a second time.
+func LoadScopeRaw(missingOK bool) (*Config, map[string]any, error) {
+	path, err := ConfigPath()
+	if err != nil {
+		return nil, nil, err
+	}
+	return loadScopeRawAt(path, missingOK)
 }
 
 // Exists reports whether config.json exists in the current scope, reusing the safety checks of config reads.
@@ -140,21 +205,35 @@ func withConfigLock(path string, fn func() error) error {
 	if err != nil {
 		return err
 	}
-	anchor, err := volumeAnchor(abs)
+	return withConfigLockFile(abs, abs+".lock", fn)
+}
+
+func withConfigLockFile(dataPath, lockPath string, fn func() error) error {
+	absData, err := lexicalAbsolute(dataPath)
 	if err != nil {
 		return err
 	}
-	if err := fs.EnsureInheritedDirectoryPath(filepath.Dir(abs)); err != nil {
-		return wrapSaveError(path, err)
-	}
-	lockFile, err := fs.OpenAppendFile(anchor, abs+".lock")
+	absLock, err := lexicalAbsolute(lockPath)
 	if err != nil {
-		return wrapSaveError(path, err)
+		return err
+	}
+	for _, dir := range []string{filepath.Dir(absData), filepath.Dir(absLock)} {
+		if err := fs.EnsureInheritedDirectoryPath(dir); err != nil {
+			return wrapSaveError(dataPath, err)
+		}
+	}
+	anchor, err := volumeAnchor(absLock)
+	if err != nil {
+		return err
+	}
+	lockFile, err := fs.OpenAppendFile(anchor, absLock)
+	if err != nil {
+		return wrapSaveError(dataPath, err)
 	}
 	lock, err := fs.LockExclusive(lockFile.File)
 	if err != nil {
 		_ = lockFile.Close()
-		return wrapSaveError(path, err)
+		return wrapSaveError(dataPath, err)
 	}
 	operationErr := fn()
 	unlockErr := lock.Unlock()
@@ -163,10 +242,10 @@ func withConfigLock(path string, fn func() error) error {
 		return operationErr
 	}
 	if unlockErr != nil {
-		return wrapSaveError(path, unlockErr)
+		return wrapSaveError(dataPath, unlockErr)
 	}
 	if closeErr != nil {
-		return wrapSaveError(path, closeErr)
+		return wrapSaveError(dataPath, closeErr)
 	}
 	return nil
 }

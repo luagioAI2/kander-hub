@@ -64,14 +64,26 @@ func printDoctorWithTools(tools TerminalTools, repair bool) bool {
 	if tools.Herdr.Error != "" || tools.Tmux.Error != "" {
 		healthy = false
 	}
-	agents := findAgents()
+	agentConfig, agentConfigErr := config.Load(false)
+	if agentConfigErr != nil && !repair {
+		warning(agentConfigErr.Error())
+		healthy = false
+	}
+	agents := findAgents(agentConfig)
 	if repair {
 		if _, ok := repairDoctorConfig(agents, tools); !ok {
 			healthy = false
 		}
+		if loaded, loadErr := config.Load(false); loadErr != nil {
+			warning(loadErr.Error())
+			healthy = false
+		} else {
+			agentConfig = loaded
+			agents = findAgents(agentConfig)
+		}
 	}
 	var configuredLauncher string
-	if loaded, loadErr := config.Load(true); loadErr == nil {
+	if loaded, loadErr := config.Load(false); loadErr == nil {
 		if effective, effErr := config.Effective(loaded); effErr == nil {
 			configuredLauncher = effective.Launcher
 		}
@@ -106,15 +118,21 @@ func printDoctorWithTools(tools TerminalTools, repair bool) bool {
 	hint(config.Text("menu.agent_capabilities"))
 	anyExec := false
 	anyReview := false
-	for _, name := range config.ExecutionAgents {
+	for _, name := range config.AgentNames(agentConfig) {
 		state := agents[name]
+		if labels[name] == "" {
+			labels[name] = name
+		}
+		if reviewerUsable(state) {
+			anyReview = true
+		}
 		if agentUsable(state) {
 			anyExec = true
-			if state.Review {
+			if reviewerUsable(state) {
 				anyReview = true
 			}
 			caps := []string{config.Text("menu.execution")}
-			if state.Review {
+			if reviewerUsable(state) {
 				caps = append(caps, config.Text("menu.review"))
 			}
 			joined := caps[0]
@@ -140,7 +158,7 @@ func printDoctorWithTools(tools TerminalTools, repair bool) bool {
 		warning(config.Text("menu.no_reviewer_found_reviews_cannot_run"))
 	}
 
-	loaded, loadErr := config.Load(true)
+	loaded, loadErr := config.Load(false)
 	if loadErr != nil {
 		warning(loadErr.Error())
 		healthy = false
@@ -173,6 +191,9 @@ func reportRulesIntegration(cfg *config.Config, paths config.InstallPaths, repai
 	seen := map[string]struct{}{}
 	for _, selected := range config.ExecutionAgentsInUse(effective) {
 		target := install.AgentRulesTarget(selected, paths)
+		if target == "" {
+			continue
+		}
 		if _, ok := seen[target]; ok && target != "" {
 			continue
 		}
@@ -238,7 +259,7 @@ func validateConfiguredResources(cfg *config.Config, agents map[string]agentStat
 	}
 	for _, role := range config.ReviewRoles {
 		reviewer := effective.Reviewers[role]
-		if !agentUsable(agents[reviewer]) {
+		if !reviewerUsable(agents[reviewer]) {
 			healthy = false
 			warning(config.Text(
 				"menu.configured_reviewer_is_unavailable_install_it_then_run_kander", role, reviewer,

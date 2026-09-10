@@ -64,13 +64,14 @@ var (
 
 // Error is a displayable failure of a board command.
 type Error struct {
+	Code    string // Stable message key when the failure has a known board category.
 	Message string
 }
 
 func (e *Error) Error() string { return e.Message }
 
 func kanbanError(id string, args ...any) *Error {
-	return &Error{Message: t(id, args...)}
+	return &Error{Code: id, Message: t(id, args...)}
 }
 
 func t(id string, args ...any) string {
@@ -93,6 +94,9 @@ type Entry struct {
 
 // Board is the result of one scan. Invalid entries go to Problems; violations bound to a task ID go to Blocked.
 type Board struct {
+	dispatches     map[string]*DispatchSummary
+	dispatchErrors map[string]error
+	revisions      map[string]uint64
 	documents      map[string]string
 	documentErrors map[string]error
 	Entries        map[string]Entry
@@ -155,7 +159,7 @@ func wrapFS(err error, id string, args ...any) error {
 	if errors.As(err, &ke) {
 		return err
 	}
-	return &Error{Message: t(id, args...)}
+	return &Error{Code: id, Message: t(id, args...)}
 }
 
 func allowedMove(from, to string) bool {

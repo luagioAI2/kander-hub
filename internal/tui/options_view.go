@@ -12,23 +12,15 @@ import (
 )
 
 // innerWidth is the number of writable columns inside the popup border; rendering and measuring must use the same value.
+// The panel asks for a four-column margin on each side and lets the popup clamp from there.
 func (p *optionsPanel) innerWidth() int {
-	_, screenWidth := p.app.size()
-	boxWidth := screenWidth - 8
-	if boxWidth > popupMaxWidth {
-		boxWidth = popupMaxWidth
-	}
-	if boxWidth < popupMinWidth {
-		boxWidth = popupMinWidth
-	}
-	if boxWidth > screenWidth {
-		boxWidth = screenWidth
-	}
-	inner := boxWidth - 4
-	if inner < 1 {
-		inner = 1
-	}
-	return inner
+	screenHeight, screenWidth := p.app.size()
+	return p.frame("").inner(screenWidth, screenHeight, screenWidth-12)
+}
+
+// frame is the popup shape of the settings panel. The title is filled in only when it is being rendered.
+func (p *optionsPanel) frame(title string) popup {
+	return popup{Title: title, TightFit: true}
 }
 
 // startForm installs a new form: Init first draws the fields into the viewport, then the natural height is measured.
@@ -80,12 +72,12 @@ func (p *optionsPanel) view() (popupBox, string) {
 	screenHeight, screenWidth := p.app.size()
 
 	inner := p.innerWidth()
-	boxWidth := inner + 4
-	// The title line, the separator and the top and bottom borders.
-	chrome := 4
+	// The title text only comes out of content() below, but it is always a single line, so the frame
+	// can be measured with a stand-in already.
+	frame := p.frame("title")
 	// When the content does not fit, the options popup may reach the top and bottom edges of the terminal, so the rule modules do not
 	// start scrolling merely because of the popup's outer margin.
-	maxBody := screenHeight - chrome
+	maxBody := screenHeight - frame.chrome()
 	if maxBody < 3 {
 		maxBody = 3
 	}
@@ -95,39 +87,14 @@ func (p *optionsPanel) view() (popupBox, string) {
 	if len(lines) > maxBody {
 		lines = lines[:maxBody]
 	}
-	bodyHeight := len(lines)
-	if bodyHeight < 1 {
-		bodyHeight = 1
-	}
+	frame.Title = optionsHeader(title, inner)
 
-	box := centerOptionsPopup(screenWidth, screenHeight, boxWidth, bodyHeight+chrome)
+	box, bodyBox, out := frame.render(palette, screenWidth, screenHeight, inner, strings.Join(lines, "\n"))
 	p.box = box
-	// The body starts after the top border, the title line and the separator; on the left it gives up one column each to the border and the padding.
-	p.bodyX, p.bodyY = box.X+2, box.Y+3
-	p.bodyWidth, p.bodyHeight = inner, bodyHeight
+	p.bodyX, p.bodyY = bodyBox.X, bodyBox.Y
+	p.bodyWidth, p.bodyHeight = bodyBox.Width, bodyBox.Height
 	p.bodyLines = lines
-
-	rule := styleFor("popup-edge", palette).Render(strings.Repeat("─", inner))
-	content := strings.Join([]string{
-		styleFor("popup-title", palette).Render(optionsHeader(title, inner)),
-		rule,
-		padBlock(strings.Join(lines, "\n"), inner, bodyHeight, palette),
-	}, "\n")
-	return box, withDefaultColors(popupFrame(palette, boxWidth-2).Render(content), palette.ink(palette.Base))
-}
-
-// centerOptionsPopup keeps the ordinary popup margins while the content fits; only a height shortage consumes them.
-func centerOptionsPopup(screenWidth, screenHeight, wantWidth, wantHeight int) popupBox {
-	box := centerPopup(screenWidth, screenHeight, wantWidth, wantHeight)
-	height := wantHeight
-	if height > screenHeight {
-		height = screenHeight
-	}
-	if height > box.Height {
-		box.Height = height
-		box.Y = (screenHeight - height) / 2
-	}
-	return box
+	return box, out
 }
 
 func trimTrailingBlank(lines []string) []string {
@@ -165,7 +132,13 @@ func (p *optionsPanel) content(palette palette, width, height int) (string, stri
 		p.measureForm()
 	}
 	p.syncFormTheme(palette)
-	formHeight, footerGap := fitOptionsForm(p.formNatural, height)
+	notice, noticeLines := p.renderScopeChrome(palette, width)
+	if !p.confirming && notice == "" && p.overlayNotice != "" {
+		notice = styleFor("popup-dim", palette).Render(clipText(p.overlayNotice, width)) + "\n"
+		noticeLines = 1
+	}
+	p.chromeLines = noticeLines
+	formHeight, footerGap := fitOptionsForm(p.formNatural, height-noticeLines)
 	p.form.WithWidth(width)
 	// Keep Huh's natural height while the content fits. Even when given the same height, WithHeight switches the
 	// Group to a viewport layout, making a page that could be shown in full take part in scrolling.
@@ -187,7 +160,7 @@ func (p *optionsPanel) content(palette palette, width, height int) (string, stri
 	// An unconstrained Huh Group may carry the trailing blanks of an initialized viewport. Trim them before adding the hint,
 	// otherwise those blanks become interior whitespace and the popup cannot hug its actual content.
 	formView := strings.Join(trimTrailingBlank(strings.Split(p.form.View(), "\n")), "\n")
-	return title, formView + footerGap + hint
+	return title, notice + formView + footerGap + hint
 }
 
 // fitOptionsForm owns the vertical layout of every section: the blank line before the hint is preserved first,
@@ -217,6 +190,9 @@ func (p *optionsPanel) hintLine() string {
 	case p.confirming:
 		return t("tui.move_enter_confirm_esc_keep_editing")
 	case p.current == "":
+		if p.session != nil && len(p.session.AvailableTargets()) > 1 {
+			return t("tui.move_enter_open_esc_close") + " · " + t("tui.switch_scope_tabs")
+		}
 		return t("tui.move_enter_open_esc_close")
 	case p.current == sectionExecution || p.current == sectionReview:
 		return t("tui.field_change_type_model_ids_enter_save_esc_back")
@@ -307,6 +283,12 @@ func (p *optionsPanel) currentBodyLines() []string {
 	return trimTrailingBlank(strings.Split(p.form.View(), "\n"))
 }
 
+// optionsMouseActivate is true for a left click or a same-position release.
+// mapButtons never sets mouseBtn1Clicked; a real single click arrives as press then release.
+func optionsMouseActivate(bstate int) bool {
+	return mouseLeftClicked(bstate) || mouseButton1Released(bstate)
+}
+
 // HandleMouse gives the popup click-to-focus, double-click confirmation and wheel scrolling.
 // Every focus move is turned into a command handed back to Bubble Tea rather than driving the form synchronously here.
 func (p *optionsPanel) HandleMouse(x, y, bstate int) tea.Cmd {
@@ -322,19 +304,22 @@ func (p *optionsPanel) HandleMouse(x, y, bstate int) tea.Cmd {
 	if p.form == nil {
 		return nil
 	}
+	if cmd := p.handleTabMouse(x, y, bstate); cmd != nil {
+		return cmd
+	}
 	if delta := mouseWheelDelta(bstate); delta != 0 {
 		if delta > 0 {
 			return keyCmd(tea.KeyDown)
 		}
 		return keyCmd(tea.KeyUp)
 	}
-	if !mouseLeftClicked(bstate) {
+	if !optionsMouseActivate(bstate) {
 		return nil
 	}
 	if x < p.bodyX || x >= p.bodyX+p.bodyWidth || y < p.bodyY || y >= p.bodyY+p.bodyHeight {
 		return nil
 	}
-	target := y - p.bodyY
+	target := y - p.bodyY - p.chromeLines
 	lines := p.currentBodyLines()
 	if target < 0 || target >= len(lines) {
 		return nil

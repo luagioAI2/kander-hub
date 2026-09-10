@@ -59,146 +59,25 @@ func selectTodo(b board.Board, task string) (board.Entry, error) {
 }
 
 func commandStart(root, agentOverride, launcherOverride, taskID string) error {
-	loaded, err := loadBoardFn(root)
-	if err != nil {
-		return err
-	}
-	entry, err := selectTodo(loaded, taskID)
-	if err != nil {
-		return err
-	}
-	cfg, err := loadEffective()
-	if err != nil {
-		return err
-	}
-	original, err := readDocumentFn(entry)
-	if err != nil {
-		return err
-	}
-	if err := board.ValidateMutable(entry, original); err != nil {
-		return err
-	}
-	if err := cfg.Rules.CheckTaskGroup(taskGroupFrom(original)); err != nil {
-		return err
-	}
-	agentName := agentOverride
-	if agentName == "" {
-		agentName, err = config.KanbanAgentFor(cfg, entry.Kind)
+	if taskID == "" {
+		loaded, err := loadBoardFn(root)
 		if err != nil {
 			return err
 		}
-	}
-	if !contains(config.ExecutionAgents, agentName) {
-		return launchError("launch.unsupported_agent", agentName)
-	}
-	launcher := launcherOverride
-	if launcher == "" {
-		launcher = cfg.Launcher
-	}
-	plan, err := prepareLaunch(launcher, parentDir(root), "start")
-	if err != nil {
-		return err
-	}
-	applyAgentLaunchEnv(&plan, agentName)
-	program, err := requireAgentProgram(agentName)
-	if err != nil {
-		return err
-	}
-	session, err := newAgentSession(agentName, program)
-	if err != nil {
-		return err
-	}
-	// DSH resumes only pre-existing sessions: pre-create the stable per-task
-	// session before anything else is written, then point the card at it.
-	if agentName == "dsh" {
-		reference, preErr := dshPrecreateSession(entry.TaskID, root)
-		if preErr != nil {
-			return preErr
+		entry, err := selectTodo(loaded, "")
+		if err != nil {
+			return err
 		}
-		session = AgentSession{Agent: agentName, Reference: reference}
+		taskID = entry.TaskID
 	}
-	previous := map[string]struct{}{}
-	if agentName == "codex" && (plan.Launcher == "tmux" || plan.Launcher == "tmux-session") {
-		if sessions, err := codexSessionsForTask(entry.TaskID); err == nil {
-			for _, id := range sessions {
-				previous[id] = struct{}{}
-			}
-		}
+	result, err := Start(root, agentOverride, launcherOverride, taskID)
+	for _, warning := range result.Warnings {
+		fmt.Fprint(os.Stderr, warning)
 	}
-	window := ""
-	if plan.Launcher == "foreground" || plan.Launcher == "console" {
-		window = plan.Launcher
-	}
-	updated, err := startMetadata(original, agentName, session, window)
 	if err != nil {
 		return err
 	}
-	paths, err := currentInstallPaths()
-	if err != nil {
-		return err
-	}
-	body, err := startAgentPrompt(entry.TaskID, paths, taskGroupFrom(original), original)
-	if err != nil {
-		return err
-	}
-	taskFile, err := createTaskFile(body, "kander-"+entry.TaskID+"-start-")
-	if err != nil {
-		return err
-	}
-	taskFileHandedOff := false
-	defer func() {
-		if !taskFileHandedOff {
-			_ = removeTaskFile(taskFile)
-		}
-	}()
-	prompt := taskInstruction(t("launch.prompt.start_head", entry.TaskID), taskFile)
-	model := cfg.Models.Kanban[agentName]
-	args, err := agentArguments(agentName, model, entry.Kind, session, false)
-	if err != nil {
-		return err
-	}
-	// The dsh tui profile takes no positional prompt; the task file path is
-	// printed after launch and (under tmux) injected once the TUI is ready.
-	if agentName == "dsh" {
-		prompt = ""
-	} else {
-		args = append(args, prompt)
-	}
-	inv, err := launchInvocation(plan, *program, args)
-	if err != nil {
-		return err
-	}
-	moved, err := moveEntryFn(entry, root, "working")
-	if err != nil {
-		return err
-	}
-	name := windowName(entry, original)
-	paneCB := (func() (AgentSession, error))(nil)
-	if plan.Launcher == "tmux" || plan.Launcher == "tmux-session" {
-		paneCB = func() (AgentSession, error) {
-			if session.Reference != "" {
-				return session, nil
-			}
-			ref, err := discoverNewCodexSession(moved.TaskID, previous)
-			if err != nil {
-				return AgentSession{}, err
-			}
-			return AgentSession{Agent: "codex", Reference: ref}, nil
-		}
-	}
-	loc := (func(LaunchOutcome) error)(nil)
-	if plan.Launcher == "herdr" || plan.Launcher == "tmux" || plan.Launcher == "tmux-session" {
-		loc = recordWindowLocation(root, plan, moved)
-	}
-	if err := writeDocumentFn(root, moved, updated); err != nil {
-		return rollbackLaunch(root, moved, entry.State, asLaunchFailure(err), &original)
-	}
-	outcome, err := launchAgent(plan, root, name, inv, loc, paneCB, &session)
-	if err != nil {
-		return rollbackLaunch(root, moved, entry.State, asLaunchFailure(err), &original)
-	}
-	taskFileHandedOff = true
-	return reportLaunch(t("launch.started"), moved, agentName, plan, outcome)
+	return reportLaunch(t("launch.started"), board.Entry{TaskID: result.TaskID, Kind: result.Size}, result.Agent, result.Plan, result.Outcome)
 }
 
 func parentDir(p string) string {
@@ -218,10 +97,7 @@ func lastSlash(p string) int {
 	return i
 }
 
-func commandResume(root string, agent *string, launcherOverride, taskID, message, messageFile string, messageSet bool, timeout float64) error {
-	if err := validateLivenessTimeout(timeout, "resume"); err != nil {
-		return err
-	}
+func commandResumeLegacy(root string, agent *string, launcherOverride, taskID, message, messageFile string, messageSet bool, timeout float64, authorization ...resumeBinding) error {
 	loaded, err := loadBoardFn(root)
 	if err != nil {
 		return err
@@ -242,6 +118,14 @@ func commandResume(root string, agent *string, launcherOverride, taskID, message
 	text, err := readDocumentFn(entry)
 	if err != nil {
 		return err
+	}
+	if len(authorization) > 0 {
+		bound, e := board.ReadExecutionSnapshot(root, taskID, authorization[0].Authorization)
+		if e != nil {
+			return e
+		}
+		entry = bound.Entry
+		text = bound.Text
 	}
 	oldSession, err := sessionFrom(text)
 	if err != nil {
@@ -271,27 +155,28 @@ func commandResume(root string, agent *string, launcherOverride, taskID, message
 	if takeover {
 		agentName = *agent
 	}
-	applyAgentLaunchEnv(&plan, agentName)
-	program, err := requireAgentProgram(agentName)
+	if !config.HasAgent(cfg, agentName) {
+		return launchError("launch.unsupported_agent", agentName)
+	}
+	if err := applyAgentDelivery(&plan, cfg, agentName); err != nil {
+		return err
+	}
+	program, err := requireAgentProgram(agentName, cfg)
 	if err != nil {
 		return err
 	}
 	var session AgentSession
 	if takeover {
-		session, err = newAgentSession(agentName, program)
+		session, err = newAgentSession(agentName, program, cfg)
 	} else {
-		session, err = resolvedTaskSession(entry.TaskID, text)
+		session, err = resolvedTaskSession(entry.TaskID, text, cfg)
 	}
 	if err != nil {
 		return err
 	}
 	previous := map[string]struct{}{}
-	if takeover && session.Agent == "codex" && (plan.Launcher == "tmux" || plan.Launcher == "tmux-session") {
-		if sessions, err := codexSessionsForTask(entry.TaskID); err == nil {
-			for _, id := range sessions {
-				previous[id] = struct{}{}
-			}
-		}
+	if takeover {
+		previous = sessionDiscoverSnapshot(config.AgentFor(cfg, session.Agent).Session.Mode, entry.TaskID, plan.Launcher)
 	}
 	paths, err := currentInstallPaths()
 	if err != nil {
@@ -326,16 +211,11 @@ func commandResume(root string, agent *string, launcherOverride, taskID, message
 	}
 	prompt := taskInstruction(head, taskFile)
 	model := cfg.Models.Kanban[session.Agent]
-	args, err := agentArguments(session.Agent, model, entry.Kind, session, !takeover)
+	args, err := agentArguments(session.Agent, model, entry.Kind, session, !takeover, cfg)
 	if err != nil {
 		return err
 	}
-	if session.Agent == "dsh" {
-		prompt = ""
-	} else {
-		args = append(args, prompt)
-	}
-	inv, err := launchInvocation(plan, *program, args)
+	inv, err := launchInvocation(plan, *program, attachPrompt(&plan, args, prompt))
 	if err != nil {
 		return err
 	}
@@ -344,15 +224,19 @@ func commandResume(root string, agent *string, launcherOverride, taskID, message
 	effective := session
 	paneCB := (func() (AgentSession, error))(nil)
 	if plan.Launcher == "tmux" || plan.Launcher == "tmux-session" {
+		mode := config.AgentFor(cfg, session.Agent).Session.Mode
 		paneCB = func() (AgentSession, error) {
 			if session.Reference != "" {
 				return session, nil
 			}
-			ref, err := discoverNewCodexSession(moved.TaskID, previous)
+			if !config.SessionDiscoversAfterStart(mode) {
+				return session, nil
+			}
+			ref, err := runSessionDiscoverHook(mode, moved.TaskID, previous)
 			if err != nil {
 				return AgentSession{}, err
 			}
-			effective = AgentSession{Agent: "codex", Reference: ref}
+			effective = AgentSession{Agent: session.Agent, Reference: ref}
 			if takeover {
 				current, err := readDocumentFn(moved)
 				if err != nil {
@@ -402,12 +286,19 @@ func commandResume(root string, agent *string, launcherOverride, taskID, message
 			return rollbackLaunch(root, moved, entry.State, asLaunchFailure(err), &text)
 		}
 	}
-	outcome, err := launchAgent(plan, root, windowName(entry, text), inv, loc, paneCB, &session)
+	outcome, err := launchAgent(plan, root, windowName(entry, text), inv, loc, paneCB, &session, len(authorization) > 0)
 	if err != nil {
+		if asLaunchFailure(err).DeliveryUnknown {
+			taskFileHandedOff = true
+			return err
+		}
 		return rollbackLaunch(root, moved, entry.State, asLaunchFailure(err), &text)
 	}
 	taskFileHandedOff = true
-	if err := validateResumedAgent(plan, outcome, effective, timeout); err != nil {
+	if err := validateResumedDispatch(root, moved, text, plan, outcome, effective, timeout); err != nil {
+		if len(authorization) > 0 {
+			return err
+		}
 		detail := resumedAgentFailureOutput(plan, outcome)
 		if detail != "" {
 			err = launchError("launch.agent_output", err.Error(), detail)
@@ -444,6 +335,12 @@ func commandResume(root string, agent *string, launcherOverride, taskID, message
 	verb := t("launch.resumed")
 	if takeover {
 		verb = t("launch.taken_over")
+	}
+	if len(authorization) > 0 {
+		if authorization[0].Outcome != nil {
+			*authorization[0].Outcome = ResumeLaunch{Plan: plan, Outcome: outcome}
+		}
+		return nil
 	}
 	return reportLaunch(verb, moved, effective.Agent, plan, outcome)
 }

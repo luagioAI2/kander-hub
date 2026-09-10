@@ -1,18 +1,19 @@
 package liveness
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"math"
 	"os"
-	"os/signal"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/dualface/kander/internal/board"
+	"github.com/dualface/kander/internal/config"
 )
 
 const (
@@ -35,29 +36,65 @@ type changeEvent struct {
 }
 
 type livenessJSON struct {
-	Agent   string `json:"agent"`
-	Status  string `json:"status"`
-	Channel string `json:"channel"`
-	Detail  string `json:"detail"`
+	Agent            string              `json:"agent"`
+	Status           string              `json:"status"`
+	Channel          string              `json:"channel"`
+	Detail           string              `json:"detail"`
+	ObservedAt       *time.Time          `json:"observed_at,omitempty"`
+	AgeSeconds       float64             `json:"age_seconds"`
+	RuntimeState     string              `json:"runtime_state"`
+	ObservationValid bool                `json:"observation_valid"`
+	Identity         ObservationIdentity `json:"identity"`
+	Revision         uint64              `json:"revision"`
+	CollectionState  string              `json:"collection_state"`
+	Collecting       bool                `json:"collecting"`
+	Stale            bool                `json:"stale"`
+	NewWindow        string              `json:"new_window,omitempty"`
 }
 
 type groupEvent struct {
-	Event    string                  `json:"event"`
-	GroupID  string                  `json:"group_id"`
-	Tasks    map[string]string       `json:"tasks"`
-	Changed  []changeEvent           `json:"changed,omitempty"`
-	Watched  []string                `json:"watched,omitempty"`
-	Liveness map[string]livenessJSON `json:"liveness,omitempty"`
+	Dispatches             map[string]dispatchJSON `json:"dispatches,omitempty"`
+	Attention              []string                `json:"attention,omitempty"`
+	SchemaVersion          int                     `json:"schema_version"`
+	SubscriptionID         string                  `json:"subscription_id"`
+	Seq                    uint64                  `json:"seq"`
+	ObservedAt             time.Time               `json:"observed_at"`
+	TaskRevisions          map[string]uint64       `json:"task_revisions"`
+	Updated                []string                `json:"updated,omitempty"`
+	WatchReferences        []string                `json:"watch_references,omitempty"`
+	MembershipVersions     map[string]string       `json:"membership_versions,omitempty"`
+	Memberships            map[string][]string     `json:"memberships,omitempty"`
+	MembershipComplete     bool                    `json:"membership_complete"`
+	ReconciliationRequired bool                    `json:"reconciliation_required"`
+	ReadStatus             string                  `json:"read_status"`
+	Detail                 string                  `json:"detail,omitempty"`
+	Removed                []string                `json:"removed,omitempty"`
+	Event                  string                  `json:"event"`
+	GroupID                string                  `json:"group_id"`
+	Tasks                  map[string]string       `json:"tasks"`
+	Changed                []changeEvent           `json:"changed,omitempty"`
+	Watched                []string                `json:"watched,omitempty"`
+	Liveness               map[string]livenessJSON `json:"liveness,omitempty"`
 }
 
 var nowFn = time.Now
 
 func parsePositiveFloat(raw, id string, args ...any) (float64, error) {
 	value, err := strconv.ParseFloat(raw, 64)
-	if err != nil || math.IsNaN(value) || math.IsInf(value, 0) || value <= 0 {
+	if _, valid := subscriptionInterval(value); err != nil || !valid {
 		return 0, fmt.Errorf("%s", t(id, args...))
 	}
 	return value, nil
+}
+
+// subscriptionInterval rejects values that would overflow or truncate to zero.
+func subscriptionInterval(seconds float64) (time.Duration, bool) {
+	nanoseconds := seconds * float64(time.Second)
+	// float64(MaxInt64) rounds up to 2^63, so the upper bound is exclusive.
+	if math.IsNaN(nanoseconds) || nanoseconds < 1 || nanoseconds >= float64(math.MaxInt64) {
+		return 0, false
+	}
+	return time.Duration(nanoseconds), true
 }
 
 func parseSubscribeArgs(args []string) (subscribeOptions, string) {
@@ -129,112 +166,6 @@ func uniqueStrings(values []string) bool {
 	return true
 }
 
-func groupMembers(root string) (map[string][]string, error) {
-	scanned, err := board.Scan(root)
-	if err != nil {
-		return nil, err
-	}
-	return groupMembersFrom(scanned)
-}
-
-func groupMembersFrom(scanned board.Board) (map[string][]string, error) {
-	members := map[string][]string{}
-	for taskID := range scanned.Entries {
-		text, err := scanned.Document(taskID)
-		if err != nil {
-			return nil, err
-		}
-		if group := taskGroupFrom(text); group != "" {
-			members[group] = append(members[group], taskID)
-		}
-	}
-	for group, ids := range members {
-		sort.Strings(ids)
-		members[group] = ids
-	}
-	return members, nil
-}
-
-func watchedTaskIDs(root string, values, memberIDs []string) ([]string, error) {
-	if len(values) == 0 {
-		return nil, nil
-	}
-	memberSet := map[string]struct{}{}
-	for _, id := range memberIDs {
-		memberSet[id] = struct{}{}
-	}
-	var groups []string
-	for _, value := range values {
-		if taskGroupRe.MatchString(value) {
-			groups = append(groups, value)
-		}
-	}
-	var groupMap map[string][]string
-	if len(groups) > 0 {
-		var err error
-		groupMap, err = groupMembers(root)
-		if err != nil {
-			return nil, err
-		}
-	}
-	var watched []string
-	watchedSet := map[string]struct{}{}
-	for _, value := range values {
-		var expanded []string
-		if taskGroupRe.MatchString(value) {
-			expanded = groupMap[value]
-			if len(expanded) == 0 {
-				return nil, fmt.Errorf("%s", t(
-					"liveness.watched_task_group_has_no_members", value,
-				))
-			}
-		} else {
-			id, err := board.NormalizeTaskID(value)
-			if err != nil {
-				return nil, err
-			}
-			expanded = []string{id}
-		}
-		for _, taskID := range expanded {
-			if _, ok := memberSet[taskID]; ok {
-				return nil, fmt.Errorf("%s", t(
-					"liveness.watched_target_duplicates_a_member_task", taskID,
-				))
-			}
-			if _, ok := watchedSet[taskID]; ok {
-				return nil, fmt.Errorf("%s", t(
-					"liveness.watched_task_ids_must_not_be_repeated", taskID,
-				))
-			}
-			watched = append(watched, taskID)
-			watchedSet[taskID] = struct{}{}
-		}
-	}
-	scanned, err := board.ScanTargets(root, watched)
-	if err != nil {
-		return nil, err
-	}
-	if len(scanned.Problems) > 0 {
-		return nil, fmt.Errorf("%s", scanned.Problems[0].Message)
-	}
-	return watched, nil
-}
-
-func groupStateSnapshot(root string, taskIDs []string) (board.Board, map[string]string, error) {
-	scanned, err := board.ScanTargets(root, taskIDs)
-	if err != nil {
-		return board.Board{}, nil, err
-	}
-	if len(scanned.Problems) > 0 {
-		return board.Board{}, nil, fmt.Errorf("%s", scanned.Problems[0].Message)
-	}
-	states := map[string]string{}
-	for _, taskID := range taskIDs {
-		states[taskID] = scanned.Entries[taskID].State
-	}
-	return scanned, states, nil
-}
-
 func emitEvent(w io.Writer, payload groupEvent) error {
 	data, err := json.Marshal(payload)
 	if err != nil {
@@ -244,111 +175,83 @@ func emitEvent(w io.Writer, payload groupEvent) error {
 	return err
 }
 
-func subscriptionLiveness(scanned board.Board, states map[string]string) map[string]livenessJSON {
-	reports := map[string]livenessJSON{}
-	for taskID, state := range states {
-		if state != "working" {
-			continue
-		}
-		entry := scanned.Entries[taskID]
-		text, err := scanned.Document(taskID)
-		var rep Report
-		if err != nil {
-			rep = Report{Agent: "N/A", Status: Unknown, Channel: "unknown", Detail: err.Error()}
-		} else {
-			rep = ClassifyTask(entry, text)
-		}
-		reports[taskID] = livenessJSON{Agent: rep.Agent, Status: rep.Status, Channel: rep.Channel, Detail: rep.Detail}
-	}
-	if len(reports) == 0 {
-		return nil
-	}
-	return reports
-}
-
-func makeEvent(event, groupID string, tasks map[string]string, watched []string, changed []changeEvent, live map[string]livenessJSON) groupEvent {
-	payload := groupEvent{Event: event, GroupID: groupID, Tasks: tasks}
-	if changed != nil {
-		payload.Changed = changed
-	}
-	if len(watched) > 0 {
-		payload.Watched = watched
-	}
-	if len(live) > 0 {
-		payload.Liveness = live
-	}
-	return payload
-}
-
-func validateSubscribe(root string, opts subscribeOptions) ([]string, []string, error) {
-	if !taskGroupRe.MatchString(opts.Group) {
-		return nil, nil, fmt.Errorf("%s", t("liveness.invalid_task_group_id", opts.Group))
-	}
-	if !uniqueStrings(opts.Members) {
-		return nil, nil, fmt.Errorf("%s", t("liveness.member_task_ids_must_not_be_repeated"))
-	}
-	var members []string
-	for _, value := range opts.Members {
-		id, err := board.NormalizeTaskID(value)
-		if err != nil {
-			return nil, nil, err
-		}
-		members = append(members, id)
-	}
-	if !uniqueStrings(members) {
-		return nil, nil, fmt.Errorf("%s", t("liveness.member_task_ids_must_not_be_repeated"))
-	}
-	watched, err := watchedTaskIDs(root, opts.Watch, members)
-	if err != nil {
-		return nil, nil, err
-	}
-	monitored := append(append([]string{}, members...), watched...)
-	scanned, _, err := groupStateSnapshot(root, monitored)
-	if err != nil {
-		return nil, nil, err
-	}
-	for _, taskID := range members {
-		text, err := scanned.Document(taskID)
-		if err != nil {
-			return nil, nil, err
-		}
-		actual := taskGroupFrom(text)
-		if actual != opts.Group {
-			shown := actual
-			if shown == "" {
-				shown = "N/A"
-			}
-			return nil, nil, fmt.Errorf("%s", t(
-				"liveness.task_does_not_belong_to_the_specified_group_actual", taskID, shown,
-			))
-		}
-	}
-	return members, watched, nil
-}
-
-// Subscribe writes JSON Lines to w until stop is closed.
+// Subscribe preserves the stop-channel API; a closed stop is a successful exit.
+// Writer requirements and resource ownership follow SubscribeContext.
 func Subscribe(root string, opts subscribeOptions, w io.Writer, stop <-chan struct{}) error {
-	members, watched, err := validateSubscribe(root, opts)
-	if err != nil {
-		return err
-	}
-	monitored := append(append([]string{}, members...), watched...)
-	_, snapshot, err := groupStateSnapshot(root, monitored)
-	if err != nil {
-		return err
-	}
-	if err := emitEvent(w, makeEvent("snapshot", opts.Group, snapshot, watched, nil, nil)); err != nil {
-		return err
-	}
-	lastEvent := nowFn()
-	for {
+	ctx, cancel := context.WithCancel(context.Background())
+	joined := make(chan struct{})
+	go func() {
+		defer close(joined)
 		select {
 		case <-stop:
-			return nil
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	err := SubscribeContext(ctx, root, opts, w)
+	stopped := ctx.Err() != nil
+	cancel()
+	<-joined
+	if stopped && err == context.Canceled {
+		return nil
+	}
+	return err
+}
+
+// SubscribeContext owns one probe batch and one bounded output worker. It joins
+// both before returning. Custom writers must implement ContextWriter; files,
+// bytes.Buffer, strings.Builder and io.Discard are adapted internally.
+func SubscribeContext(ctx context.Context, root string, opts subscribeOptions, w io.Writer) (result error) {
+
+	refresh, valid := subscriptionInterval(opts.Refresh)
+	if !valid {
+		return fmt.Errorf("%s", t("liveness.refresh_interval_must_be_greater_than_0"))
+	}
+	heartbeat, valid := subscriptionInterval(opts.Heartbeat)
+	if !valid {
+		return fmt.Errorf("%s", t("liveness.heartbeat_interval_must_be_greater_than_0"))
+	}
+	session, err := newSubscription(opts)
+	if err != nil {
+		return err
+	}
+	writer, cleanup, err := subscriptionWriter(w)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if cleanupErr := cleanup(); cleanupErr != nil {
+			result = errors.Join(result, cleanupErr)
+		}
+	}()
+	output := newSubscriptionOutput(ctx, writer)
+	probes := newSubscriptionProbes(ctx)
+	defer func() { probes.finish(); result = subscriptionResult(ctx, result, output.finish()) }()
+	session.probes = probes
+	session.heartbeat = heartbeat
+	w = output
+	snapshot, err := session.readContext(ctx, root)
+	if err != nil {
+		return session.unavailable(w, snapshot, err)
+	}
+	if err := session.emit(w, "snapshot", snapshot, nil, nil, nil); err != nil {
+		return err
+	}
+	probes.start(snapshot)
+	if err := session.dispatchAttention(w, snapshot, false); err != nil {
+		return err
+	}
+	heartbeatDue := nowFn().Add(heartbeat)
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-output.done:
+			return output.err
 		default:
 		}
-		heartbeatRemaining := opts.Heartbeat - nowFn().Sub(lastEvent).Seconds()
-		wait := opts.Refresh
+		heartbeatRemaining := heartbeatDue.Sub(nowFn())
+		wait := refresh
 		if heartbeatRemaining < wait {
 			if heartbeatRemaining < 0 {
 				wait = 0
@@ -356,79 +259,137 @@ func Subscribe(root string, opts subscribeOptions, w io.Writer, stop <-chan stru
 				wait = heartbeatRemaining
 			}
 		}
-		timer := time.NewTimer(time.Duration(wait * float64(time.Second)))
+		wait = session.dispatchWait(snapshot, nowFn(), wait)
+		probeCompleted := false
+		timer := time.NewTimer(wait)
 		select {
-		case <-stop:
+		case <-ctx.Done():
 			timer.Stop()
-			return nil
+			return ctx.Err()
+		case <-output.done:
+			timer.Stop()
+			return output.err
+		case batch := <-probes.results:
+			timer.Stop()
+			probes.accept(batch)
+			if len(session.attention) == 0 {
+				continue
+			}
+			probeCompleted = true
 		case <-timer.C:
 		}
-		currentBoard, current, err := groupStateSnapshot(root, monitored)
+		current, err := session.readContext(ctx, root)
 		if err != nil {
-			return err
+			return session.unavailable(w, current, err)
 		}
 		var changed []changeEvent
-		for _, taskID := range monitored {
-			if current[taskID] != snapshot[taskID] {
-				changed = append(changed, changeEvent{From: snapshot[taskID], TaskID: taskID, To: current[taskID]})
+		var updated []string
+		for _, taskID := range current.monitored {
+			if previous, ok := snapshot.states[taskID]; ok {
+				if current.states[taskID] != previous {
+					changed = append(changed, changeEvent{From: previous, TaskID: taskID, To: current.states[taskID]})
+				}
+				if current.revisions[taskID] != snapshot.revisions[taskID] {
+					updated = append(updated, taskID)
+				}
+			}
+		}
+		if membershipChanged(snapshot, current) {
+			removed := removedMembers(snapshot, current)
+			if len(removed) > 0 {
+				session.reconciliation = true
+			}
+			if err := session.emit(w, "membership-change", current, nil, nil, removed); err != nil {
+				return err
 			}
 		}
 		if len(changed) > 0 {
-			if err := emitEvent(w, makeEvent("state-change", opts.Group, current, watched, changed, nil)); err != nil {
+			if err := session.emit(w, "state-change", current, changed, updated, nil); err != nil {
 				return err
 			}
-			snapshot = current
-			lastEvent = nowFn()
-			continue
+		} else if len(updated) > 0 {
+			if err := session.emit(w, "task-update", current, nil, updated, nil); err != nil {
+				return err
+			}
 		}
-		if nowFn().Sub(lastEvent).Seconds() >= opts.Heartbeat {
-			if err := emitEvent(w, makeEvent("heartbeat", opts.Group, current, watched, nil, subscriptionLiveness(currentBoard, current))); err != nil {
+		if err := session.dispatchAttention(w, current, probeCompleted); err != nil {
+			return err
+		}
+		snapshot = current
+		if !nowFn().Before(heartbeatDue) {
+			if err := session.emit(w, "heartbeat", current, nil, nil, nil); err != nil {
 				return err
 			}
-			lastEvent = nowFn()
+			probes.start(current)
+			heartbeatDue = nowFn().Add(heartbeat)
 		}
 	}
 }
 
-func usageSubscribe(w io.Writer) {
-	fmt.Fprintln(w, t(
-		"liveness.usage_kander_subscribe_refresh_seconds_heartbeat_seconds_task_group",
-	))
+func usageSubscribe(w io.Writer) error {
+	return writeSubscriptionDiagnostic(w, t("liveness.usage_kander_subscribe_refresh_seconds_heartbeat_seconds_task_group"))
+}
+
+// A merged stdout/stderr pipe must not turn an output failure into another
+// unbounded write. When diagnostics also fail, the nonzero exit is the signal.
+func writeSubscriptionDiagnostic(w io.Writer, message string) error {
+	writer, cleanup, err := subscriptionWriter(w)
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), subscriptionWriteTimeout)
+	defer cancel()
+	data := []byte(message + "\n")
+	n, err := writer.WriteContext(ctx, data)
+	if err == nil && n != len(data) {
+		err = io.ErrShortWrite
+	}
+	return errors.Join(err, cleanup())
 }
 
 // RunSubscribe implements kander subscribe.
 func RunSubscribe(args []string) int {
 	opts, parseErr := parseSubscribeArgs(args)
 	if parseErr == "usage" {
-		usageSubscribe(os.Stderr)
+		if err := usageSubscribe(os.Stderr); err != nil {
+			return 1
+		}
 		return 2
 	}
 	if parseErr != "" {
 		if strings.HasPrefix(parseErr, t("liveness.unknown_option")) || strings.HasPrefix(parseErr, t("liveness.missing_prefix")) {
-			usageSubscribe(os.Stderr)
-			fmt.Fprintln(os.Stderr, parseErr)
+			if err := usageSubscribe(os.Stderr); err != nil {
+				return 1
+			}
+			if err := writeSubscriptionDiagnostic(os.Stderr, parseErr); err != nil {
+				return 1
+			}
 			return 2
 		}
-		fmt.Fprintf(os.Stderr, "kander: %s\n", parseErr)
+		if err := writeSubscriptionDiagnostic(os.Stderr, "kander: "+parseErr); err != nil {
+			return 1
+		}
+		return 1
+	}
+	if _, err := config.Load(false); err != nil {
+		if outputErr := writeSubscriptionDiagnostic(os.Stderr, "kander: "+err.Error()); outputErr != nil {
+			return 1
+		}
 		return 1
 	}
 	root, err := board.BoardRoot()
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "kander: %s\n", err)
+		if outputErr := writeSubscriptionDiagnostic(os.Stderr, "kander: "+err.Error()); outputErr != nil {
+			return 1
+		}
 		return 1
 	}
-	stop := make(chan struct{})
-	sig := make(chan os.Signal, 1)
-	signal.Notify(sig, os.Interrupt)
-	go func() {
-		select {
-		case <-sig:
-			close(stop)
-		case <-stop:
+	ctx, cancel := subscriptionSignalContext()
+	defer cancel()
+	if err := SubscribeContext(ctx, root, opts, os.Stdout); err != nil && err != context.Canceled {
+		if outputErr := writeSubscriptionDiagnostic(os.Stderr, "kander: "+err.Error()); outputErr != nil {
+			return 1
 		}
-	}()
-	if err := Subscribe(root, opts, os.Stdout, stop); err != nil {
-		fmt.Fprintf(os.Stderr, "kander: %s\n", err)
 		return 1
 	}
 	return 0

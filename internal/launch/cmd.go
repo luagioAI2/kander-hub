@@ -15,6 +15,8 @@ import (
 func init() {
 	cli.Commands["start"] = RunStart
 	cli.Commands["resume"] = RunResume
+	cli.Commands["dispatch"] = RunDispatch
+	cli.Commands["coordinator"] = RunCoordinator
 }
 
 func fail(err error) int {
@@ -58,13 +60,13 @@ func parseAgentLauncher(args []string) (rest []string, agent, launcher string, a
 			if !ok {
 				return nil, "", "", false, t("launch.missing_agent_value")
 			}
-			if !contains(config.ExecutionAgents, val) {
+			if !config.ValidAgentName(val) {
 				return nil, "", "", false, t("launch.unknown_agent", val)
 			}
 			agent, agentSet, i = val, true, next
 		case strings.HasPrefix(arg, "--agent="):
 			val := strings.TrimPrefix(arg, "--agent=")
-			if !contains(config.ExecutionAgents, val) {
+			if !config.ValidAgentName(val) {
 				return nil, "", "", false, t("launch.unknown_agent", val)
 			}
 			agent, agentSet = val, true
@@ -114,6 +116,9 @@ func RunStart(args []string) int {
 		}
 		task = arg
 	}
+	if _, err := config.Load(false); err != nil {
+		return fail(err)
+	}
 	root, err := boardRootFn()
 	if err != nil {
 		return fail(err)
@@ -131,6 +136,10 @@ func RunResume(args []string) int {
 			usage(os.Stdout, "resume")
 			return 0
 		}
+	}
+	args, dispatchOptions, dispatchErr := ParseDispatchOptions(args)
+	if dispatchErr != nil {
+		return fail(dispatchErr)
 	}
 	timeout := notifyDefaultTimeout
 	var message, messageFile, agent, launcher string
@@ -176,13 +185,13 @@ func RunResume(args []string) int {
 			if !ok {
 				return usageFail("resume", "launch.missing_agent_value")
 			}
-			if !contains(config.ExecutionAgents, val) {
+			if !config.ValidAgentName(val) {
 				return usageFail("resume", "launch.unknown_agent", val)
 			}
 			agent, agentSet, i = val, true, next
 		case strings.HasPrefix(arg, "--agent="):
 			val := strings.TrimPrefix(arg, "--agent=")
-			if !contains(config.ExecutionAgents, val) {
+			if !config.ValidAgentName(val) {
 				return usageFail("resume", "launch.unknown_agent", val)
 			}
 			agent, agentSet = val, true
@@ -211,6 +220,9 @@ func RunResume(args []string) int {
 	if len(positional) != 1 {
 		return usageFail("resume", "launch.task_id_is_required")
 	}
+	if _, err := config.Load(false); err != nil {
+		return fail(err)
+	}
 	var agentPtr *string
 	if agentSet {
 		agentPtr = &agent
@@ -219,7 +231,7 @@ func RunResume(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
-	if err := commandResume(root, agentPtr, launcher, positional[0], message, messageFile, messageSet, timeout); err != nil {
+	if err := commandResume(root, agentPtr, launcher, positional[0], message, messageFile, messageSet, timeout, dispatchOptions); err != nil {
 		return fail(err)
 	}
 	return 0

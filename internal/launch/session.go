@@ -77,20 +77,22 @@ func cursorCreateChat(program *process.AgentProgram) (string, error) {
 	return chatID, nil
 }
 
-func newAgentSession(agent string, program *process.AgentProgram) (AgentSession, error) {
-	switch agent {
-	case "claude", "grok":
+func newAgentSession(agent string, program *process.AgentProgram, configs ...*config.Config) (AgentSession, error) {
+	var cfg *config.Config
+	if len(configs) > 0 {
+		cfg = configs[0]
+	}
+	definition := config.AgentFor(cfg, agent)
+	if config.SessionAllocatesBeforeStart(definition.Session.Mode) {
+		id, err := runSessionAllocateHook(definition.Session.Mode, program)
+		return AgentSession{Agent: agent, Reference: id}, err
+	}
+	switch definition.Session.Mode {
+	case "generated", "none":
 		return AgentSession{Agent: agent, Reference: newUUID()}, nil
-	case "dsh":
-		// DSH TUI resumes only existing sessions; the stable per-task session
-		// id is pre-created before launch, so start with an empty reference.
-		return AgentSession{Agent: agent}, nil
-	case "cursor":
-		id, err := cursorCreateChat(program)
-		if err != nil {
-			return AgentSession{}, err
-		}
-		return AgentSession{Agent: agent, Reference: id}, nil
+	case "allocated":
+		id, err := allocateAgentSession(definition.Session)
+		return AgentSession{Agent: agent, Reference: id}, err
 	default:
 		return AgentSession{Agent: agent}, nil
 	}
@@ -110,7 +112,7 @@ func parseTaskSession(text string) *AgentSession {
 	if len(parts) > 1 {
 		reference = parts[1]
 	}
-	if !contains(config.ExecutionAgents, agent) || len(parts) > 2 || (reference != "" && !sessionReferenceRe.MatchString(reference)) {
+	if !config.ValidAgentName(agent) || len(parts) > 2 || (reference != "" && !sessionReferenceRe.MatchString(reference)) {
 		return nil
 	}
 	return &AgentSession{Agent: agent, Reference: reference}
@@ -130,17 +132,37 @@ func sessionFrom(text string) (AgentSession, error) {
 	return *session, nil
 }
 
-func resolvedTaskSession(taskID, text string) (AgentSession, error) {
+func resolvedTaskSession(taskID, text string, configs ...*config.Config) (AgentSession, error) {
+	return resolveTaskIdentity(taskID, text, true, configs...)
+}
+
+func resolveTaskIdentity(taskID, text string, requireResume bool, configs ...*config.Config) (AgentSession, error) {
 	session, err := sessionFrom(text)
 	if err != nil {
 		return AgentSession{}, err
 	}
-	if session.Agent == "codex" && session.Reference == "" {
-		id, err := findCodexSession(taskID)
+	var cfg *config.Config
+	if len(configs) > 0 {
+		cfg = configs[0]
+	} else {
+		cfg, err = loadEffective()
 		if err != nil {
 			return AgentSession{}, err
 		}
-		return AgentSession{Agent: "codex", Reference: id}, nil
+	}
+	if !config.HasAgent(cfg, session.Agent) {
+		return AgentSession{}, launchError("launch.unsupported_agent", session.Agent)
+	}
+	definition := config.AgentFor(cfg, session.Agent)
+	if requireResume && definition.Session.Mode == "none" {
+		return AgentSession{}, config.AgentResumeError(session.Agent)
+	}
+	if config.SessionResolvesEmptyReference(definition.Session.Mode) && session.Reference == "" {
+		id, err := runSessionResolveHook(definition.Session.Mode, taskID)
+		if err != nil {
+			return AgentSession{}, err
+		}
+		return AgentSession{Agent: session.Agent, Reference: id}, nil
 	}
 	if session.Agent == "dsh" && session.Reference == "" {
 		id, err := findDshSession(taskID, taskLaunchRoot())
@@ -292,6 +314,65 @@ func codexSessionsForTask(taskID string) ([]string, error) {
 	return sessions, nil
 }
 
+func runSessionAllocateHook(mode string, program *process.AgentProgram) (string, error) {
+	name, ok := config.ParseSessionHook(mode)
+	if !ok {
+		return "", launchError("launch.unsupported_agent", mode)
+	}
+	switch name {
+	case "cursor-create-chat":
+		return cursorCreateChat(program)
+	default:
+		return "", launchError("launch.unsupported_agent", name)
+	}
+}
+
+func runSessionResolveHook(mode, taskID string) (string, error) {
+	name, ok := config.ParseSessionHook(mode)
+	if !ok {
+		return "", launchError("launch.unsupported_agent", mode)
+	}
+	switch name {
+	case "codex-rollout":
+		return findCodexSession(taskID)
+	default:
+		return "", launchError("launch.unsupported_agent", name)
+	}
+}
+
+func runSessionDiscoverHook(mode, taskID string, previous map[string]struct{}) (string, error) {
+	name, ok := config.ParseSessionHook(mode)
+	if !ok {
+		return "", launchError("launch.unsupported_agent", mode)
+	}
+	switch name {
+	case "codex-rollout":
+		return discoverNewCodexSession(taskID, previous)
+	default:
+		return "", launchError("launch.unsupported_agent", name)
+	}
+}
+
+func sessionDiscoverSnapshot(mode, taskID, launcher string) map[string]struct{} {
+	previous := map[string]struct{}{}
+	if !config.SessionDiscoversAfterStart(mode) || (launcher != "tmux" && launcher != "tmux-session") {
+		return previous
+	}
+	name, ok := config.ParseSessionHook(mode)
+	if !ok {
+		return previous
+	}
+	switch name {
+	case "codex-rollout":
+		if sessions, err := codexSessionsForTask(taskID); err == nil {
+			for _, id := range sessions {
+				previous[id] = struct{}{}
+			}
+		}
+	}
+	return previous
+}
+
 func findCodexSession(taskID string) (string, error) {
 	sessions, err := codexSessionsForTask(taskID)
 	if err != nil {
@@ -357,60 +438,42 @@ func dshLaunchEnv() map[string]string {
 	return map[string]string{"DSH_PERMISSION_MODE": "danger-full-access"}
 }
 
-func agentArguments(agent string, model map[string]string, kind string, session AgentSession, resume bool) ([]string, error) {
+func agentArguments(agent string, model map[string]string, kind string, session AgentSession, resume bool, configs ...*config.Config) ([]string, error) {
+	var cfg *config.Config
+	if len(configs) > 0 {
+		cfg = configs[0]
+	}
+	definition := config.AgentFor(cfg, agent)
+	if resume && definition.Session.Mode == "none" {
+		return nil, config.AgentResumeError(agent)
+	}
 	scale := "small"
 	if kind == "large" {
 		scale = "large"
 	}
 	// The model is picked per task scale; an empty scale model falls back to the shared "model" key of legacy configs.
 	modelID := config.KanbanModelFor(model, scale)
-	if agent == "cursor" {
-		var args []string
-		if modelID != "" {
-			args = append(args, "--model", modelID)
-		}
-		return append(args, "--trust", "--force", "--resume", session.Reference), nil
-	}
-	effortKey := scale + "_effort"
-	effort := model[effortKey]
-	var modelArgs []string
-	if modelID != "" {
-		modelArgs = []string{"--model", modelID}
-	}
-	switch agent {
-	case "codex":
-		options := append(append([]string{}, modelArgs...), "--config", `model_reasoning_effort="`+effort+`"`, "--dangerously-bypass-approvals-and-sandbox")
-		if resume {
-			return append(append([]string{"resume"}, options...), session.Reference), nil
-		}
-		return options, nil
-	case "claude":
-		flag := "--session-id"
-		if resume {
-			flag = "--resume"
-		}
-		return append(modelArgs, "--effort", effort, "--dangerously-skip-permissions", flag, session.Reference), nil
-	case "grok":
-		flag := "--session-id"
-		if resume {
-			flag = "--resume"
-		}
-		return append(modelArgs, "--effort", effort, "--permission-mode", "bypassPermissions", flag, session.Reference), nil
-	case "dsh":
-		// Boot the interactive tui profile; the model and reasoning effort are
-		// managed by the DSH profile config, so they are not forwarded.
-		args := []string{"--profile", "tui"}
-		if resume {
-			return append(args, "--resume", session.Reference), nil
-		}
-		return args, nil
-	default:
+	if definition.Args == nil {
 		return nil, launchError("launch.unsupported_agent", agent)
 	}
+	template := definition.Args.Start
+	if resume {
+		template = definition.Args.Resume
+	}
+	reference := session.Reference
+	if definition.Session.Mode == "none" {
+		reference = ""
+		template = config.RewriteKeepSession(template, true)
+	}
+	return config.ExpandAgentArgs(template, modelID, model[scale+"_effort"], reference), nil
 }
 
-func requireAgentProgram(agentName string) (*process.AgentProgram, error) {
-	executable := config.AgentExecutableName(agentName)
+func requireAgentProgram(agentName string, configs ...*config.Config) (*process.AgentProgram, error) {
+	var cfg *config.Config
+	if len(configs) > 0 {
+		cfg = configs[0]
+	}
+	executable := config.AgentPath(cfg, agentName)
 	program := resolveAgent(executable)
 	if program != nil {
 		return program, nil

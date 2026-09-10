@@ -2,6 +2,7 @@ package liveness
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"io"
 	"os"
@@ -47,6 +48,17 @@ func capture(t *testing.T, fn func() int) (int, string, string) {
 	return code, string(out), string(errb)
 }
 
+func writeCompleteConfig(t *testing.T) {
+	t.Helper()
+	cfg := config.DefaultConfig()
+	cfg.WelcomeComplete = true
+	cfg.Language = "cn"
+	cfg.AgentLanguage = "zh-CN"
+	if _, err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func tempBoard(t *testing.T) string {
 	t.Helper()
 	resetLang(t)
@@ -57,6 +69,8 @@ func tempBoard(t *testing.T) string {
 		}
 	}
 	t.Setenv(board.EnvBoardDir, root)
+	t.Setenv(config.EnvConfig, filepath.Join(t.TempDir(), "config.json"))
+	writeCompleteConfig(t)
 	return root
 }
 
@@ -211,6 +225,7 @@ func TestCheckReportsAliveStoppedAndUnknown(t *testing.T) {
 	setLocation(t, unknown, "codex session-1", "foreground")
 	t.Setenv("KANBAN_TMUX_PANE_SESSION", "session-1")
 	t.Setenv("KANBAN_TMUX_STALE_PANE", "%2")
+	t.Setenv("KANBAN_TMUX_LIST_PANES", "%1\t$1\tone\t@1\tcodex\t0\tother")
 
 	code, out, _ := capture(t, func() int { return RunCheck(nil) })
 	if code != 0 {
@@ -279,6 +294,7 @@ func TestCheckLivenessDoesNotAffectExitCode(t *testing.T) {
 	_, path := makeWorking(t, "liveness-exit", "退出码")
 	setLocation(t, path, "codex session-3", "tmux:$1:@1:%1")
 	t.Setenv("KANBAN_TMUX_STALE_PANE", "%1")
+	t.Setenv("KANBAN_TMUX_LIST_PANES", "%9\t$9\tnine\t@9\tcodex\t0\tother")
 
 	code, out, _ := capture(t, func() int { return RunCheck(nil) })
 	if code != 0 || !strings.Contains(out, "状态=stopped") {
@@ -473,6 +489,13 @@ func (b *subscriptionOutput) Write(p []byte) (int, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	return b.buf.Write(p)
+}
+
+func (b *subscriptionOutput) WriteContext(ctx context.Context, p []byte) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	return b.Write(p)
 }
 
 func (b *subscriptionOutput) String() string {

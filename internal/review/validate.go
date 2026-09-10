@@ -6,6 +6,7 @@ import (
 	"regexp"
 	"strings"
 
+	"github.com/dualface/kander/internal/config"
 	"github.com/dualface/kander/internal/process"
 )
 
@@ -104,7 +105,7 @@ func validateContextMode(agent string, arguments []string, replay bool) (reviewC
 	if _, statErr := os.Stat(home); os.IsNotExist(statErr) {
 		homeMissing = true
 	}
-	if replay || agent == "cursor" && homeMissing {
+	if replay || settings.homePolicy == config.ReviewHomeOptional && homeMissing {
 		stateRoot = ""
 	} else {
 		if !dirReadableWritable(home) {
@@ -211,6 +212,10 @@ func validateContextMode(agent string, arguments []string, replay bool) (reviewC
 			"review.cli_is_unavailable", settings.name, settings.executable,
 		)
 	}
+	reportLanguage, err := reportLanguageFromConfig()
+	if err != nil {
+		return reviewContext{}, err
+	}
 	return reviewContext{
 		agent:          agent,
 		settings:       settings,
@@ -224,7 +229,7 @@ func validateContextMode(agent string, arguments []string, replay bool) (reviewC
 		reviewed:       reviewed,
 		program:        *program,
 		tempRoot:       tempRoot,
-		reportLanguage: reportLanguageFromConfig(),
+		reportLanguage: reportLanguage,
 	}, nil
 }
 

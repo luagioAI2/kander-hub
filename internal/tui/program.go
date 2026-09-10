@@ -97,7 +97,7 @@ func (s *shellOut) Run() error {
 
 type shellDoneMsg struct{}
 
-// workMsg carries the result of a background task (environment probing, environment checks).
+// workMsg carries the result of a background task (environment checks, task starts or terminal focus).
 type workMsg struct{ payload any }
 
 // program is the Bubble Tea shell of App: it only translates events and holds no UI logic.
@@ -128,6 +128,9 @@ func (p program) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return p, p.app.takePending()
 	case workMsg:
 		cmd := p.app.applyWork(event.payload)
+		if !p.app.Running {
+			return p, tea.Quit
+		}
 		return p, tea.Batch(cmd, p.app.takePending())
 	}
 	cmd := p.app.Update(msg)

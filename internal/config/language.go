@@ -66,6 +66,12 @@ func CLILanguage() string {
 	return ""
 }
 
+// ExplicitConfigLanguage returns the language explicitly present on a decoded
+// welcomed config object, or empty when the key is missing or initialization is incomplete.
+func ExplicitConfigLanguage(raw map[string]any) string {
+	return explicitConfigLanguage(raw)
+}
+
 func explicitConfigLanguage(raw map[string]any) string {
 	welcome, _ := raw["welcome_complete"].(bool)
 	if !welcome {
@@ -81,26 +87,61 @@ func explicitConfigLanguage(raw map[string]any) string {
 	return ""
 }
 
-// ConfiguredLanguage returns the language explicitly saved in a valid config.json, otherwise an empty string.
-func ConfiguredLanguage() string {
+func configuredScopeObject() map[string]any {
 	path, err := ConfigPath()
 	if err != nil {
-		return ""
+		return nil
 	}
 	data, err := readConfigBytes(path)
 	if err != nil || data == nil {
-		return ""
+		return nil
 	}
 	raw, err := decodeJSON(data)
 	if err != nil {
-		return ""
+		return nil
 	}
 	obj, ok := asObject(raw)
 	if !ok {
-		return ""
+		return nil
 	}
 	if _, err := Validate(obj); err != nil {
+		return nil
+	}
+	return obj
+}
+
+// ConfiguredScopeLanguage returns the language explicitly saved in the
+// unmerged scope config.json. An empty result means the key is missing or
+// the file is not a valid welcomed config; write paths must not fall back
+// to ResolveLanguage(), which can still see a bound overlay language.
+func ConfiguredScopeLanguage() string {
+	obj := configuredScopeObject()
+	if obj == nil {
 		return ""
+	}
+	return explicitConfigLanguage(obj)
+}
+
+// ConfiguredLanguage returns the language explicitly saved in a valid
+// config.json after applying the project overlay, otherwise an empty string.
+func ConfiguredLanguage() string {
+	obj := configuredScopeObject()
+	if obj == nil {
+		return ""
+	}
+	_, overlayRaw, err := readOverlay("")
+	if err != nil {
+		return ""
+	}
+	if overlayRaw != nil {
+		merged, err := mergeOverlayRaw(cloneRawObjectDeep(obj), overlayRaw)
+		if err != nil {
+			return ""
+		}
+		if _, err := Validate(merged); err != nil {
+			return ""
+		}
+		obj = merged
 	}
 	return explicitConfigLanguage(obj)
 }
@@ -114,31 +155,39 @@ func effectiveLocale() string {
 	return ""
 }
 
-// ResolveLanguage resolves in order: --lang (KANDER_LANG_CLI) > config > environment; the default is cn.
-func ResolveLanguage() string {
-	langMu.Lock()
-	cli := cliLanguageOverride
-	bound := configLanguage
-	langMu.Unlock()
-	if contains(Languages, cli) {
-		return cli
-	}
-	if os.Getenv(EnvLangCLI) != "" {
-		if lang := os.Getenv(EnvLang); contains(Languages, lang) {
-			return lang
-		}
-	}
-	if contains(Languages, bound) {
-		return bound
-	}
+func localeLanguage() string {
 	locale := strings.ToLower(effectiveLocale())
-	if strings.HasPrefix(locale, "en") {
-		return "en"
+	if strings.HasPrefix(locale, "cn") || strings.HasPrefix(locale, "zh") {
+		return "cn"
 	}
 	if strings.HasPrefix(locale, "ja") {
 		return "ja"
 	}
-	return "cn"
+	return "en"
+}
+
+// ResolveScopeLanguage resolves --lang / KANDER_LANG_CLI then the
+// environment locale. It ignores the in-process bound config language so
+// write paths cannot copy an overlay-only language into the scope file.
+func ResolveScopeLanguage() string {
+	if lang := CLILanguage(); lang != "" {
+		return lang
+	}
+	return localeLanguage()
+}
+
+// ResolveLanguage resolves in order: --lang (KANDER_LANG_CLI) > config > environment; the default is en.
+func ResolveLanguage() string {
+	if lang := CLILanguage(); lang != "" {
+		return lang
+	}
+	langMu.Lock()
+	bound := configLanguage
+	langMu.Unlock()
+	if contains(Languages, bound) {
+		return bound
+	}
+	return localeLanguage()
 }
 
 // BindEffectiveLanguage binds the language from the on-disk config, clearing it when invalid.

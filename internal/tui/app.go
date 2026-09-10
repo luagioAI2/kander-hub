@@ -9,6 +9,8 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/dualface/kander/internal/config"
+	"github.com/dualface/kander/internal/focus"
+	"github.com/dualface/kander/internal/launch"
 	"github.com/dualface/kander/internal/menu"
 )
 
@@ -30,18 +32,25 @@ type boardHit struct {
 }
 
 type App struct {
-	Width, Height  int
-	Model          *BoardModel
-	RefreshSecs    int
-	Theme          string
-	Columns        int
-	MinColumnWidth int
-	Context        pageContext
-	GetBoard       func() (BoardPayload, error)
-	GetTask        func(string) (Task, error)
-	CopyFn         copyFn
-	PersistColumns persistFn
-	Now            func() time.Time
+	Width, Height     int
+	Model             *BoardModel
+	RefreshSecs       int
+	Theme             string
+	Columns           int
+	MinColumnWidth    int
+	Context           pageContext
+	GetBoard          func() (BoardPayload, error)
+	GetTask           func(string) (Task, error)
+	CopyFn            copyFn
+	FocusWindow       focusFn
+	PrepareStart      func(string) (startRequest, error)
+	StartTask         func(startRequest) (launch.StartResult, error)
+	StartConfirmation *startDialog
+	startSequence     uint64
+	startNotice       *startNotice
+	focusRunning      bool
+	PersistColumns    persistFn
+	Now               func() time.Time
 
 	Searching        bool
 	Detail           *Task
@@ -69,13 +78,15 @@ type App struct {
 
 	// While Options is non-nil the options popup covers the board and takes over input.
 	Options *optionsPanel
-	// Session is the config session, loaded on demand when the options are first opened.
+	// Session is the editable options config session, replaced from disk each time Options opens.
 	Session *menu.Session
 	// While Help is true the key reference overlay covers the board.
 	Help bool
 	// pendingShell is an action that must hand the terminal back; pendingWork is a background task.
 	pendingShell func()
 	pendingWork  func() any
+	// optionsLoadSeq identifies the in-flight Options config reload so a stale result cannot land on a newer panel.
+	optionsLoadSeq uint64
 
 	detailView  viewport.Model
 	detailCache detailRender
@@ -83,11 +94,14 @@ type App struct {
 
 // Update is the message entry point of App: the options panel takes over while open, otherwise the board and detail view handle it.
 func (a *App) Update(msg tea.Msg) tea.Cmd {
-	if event, ok := msg.(tea.KeyMsg); ok && mapKey(event) == "ctrl-c" {
-		a.Running = false
+	if event, ok := msg.(tea.KeyMsg); ok && mapKey(event) == "ctrl-c" && a.StartConfirmation == nil {
+		a.requestQuit()
 		return nil
 	}
 	if a.Options != nil {
+		if event, ok := msg.(tea.MouseMsg); ok {
+			return a.Options.HandleMouse(event.X, event.Y, a.mouse.mapButtons(event.X, event.Y, neutralButtons(event), time.Now()))
+		}
 		return a.Options.Update(msg)
 	}
 	switch event := msg.(type) {
@@ -119,8 +133,15 @@ func (a *App) View() string {
 	case a.Options != nil:
 		box, popup := a.Options.view()
 		base = overlay(base, popup, box.X, box.Y, p)
+	case a.StartConfirmation != nil:
+		box, popup := a.renderStartConfirmation()
+		base = overlay(base, popup, box.X, box.Y, p)
 	case a.Help:
 		box, popup := a.renderHelp()
+		base = overlay(base, popup, box.X, box.Y, p)
+	}
+	if a.Options == nil && !a.Help && a.StartConfirmation == nil && a.startNoticeOverflows(w) {
+		box, popup := a.renderStartPopup([]string{a.startNotice.full})
 		base = overlay(base, popup, box.X, box.Y, p)
 	}
 	return paintScreen(base, w, h, p)
@@ -143,6 +164,9 @@ func newApp(single bool, refresh int, ctx pageContext, getBoard func() (BoardPay
 		GetBoard:       getBoard,
 		GetTask:        getTask,
 		CopyFn:         copy,
+		FocusWindow:    focus.Window,
+		PrepareStart:   prepareTaskStart,
+		StartTask:      runTaskStart,
 		PersistColumns: persist,
 		Now:            time.Now,
 		Running:        true,
@@ -171,6 +195,7 @@ func (a *App) refreshBoard() bool {
 		return a.Model.RefreshError != previous
 	}
 	changed := a.Model.SetBoard(payload)
+	a.showJournalWarnings(payload.Warnings)
 	a.LastRefresh = a.Now()
 	return changed || a.refreshOpenDetail()
 }
@@ -199,6 +224,7 @@ func (a *App) refreshOpenDetail() bool {
 		a.Detail.TaskGroup != next.TaskGroup ||
 		a.Detail.Type != next.Type
 	a.Detail = &next
+	a.showJournalWarnings(next.Warnings)
 	a.clampDetailCursor()
 	matches := a.detailMatches(nil)
 	if len(matches) > 0 && a.DetailMatchIndex > len(matches)-1 {
@@ -220,6 +246,7 @@ func (a *App) openDetail() {
 		return
 	}
 	a.Detail = &task
+	a.showJournalWarnings(task.Warnings)
 	a.DetailScroll = 0
 	a.DetailCursor = [2]int{0, 0}
 	a.resetDetailSearch()
@@ -508,14 +535,16 @@ func (a *App) adjustColumns(delta int) {
 		return
 	}
 	// The preference already reached disk, so the cached baseline of the options session is synced, otherwise the next save would blame another process for the change.
-	a.Session.SyncTUI(written, true)
+	if a.Session != nil {
+		a.Session.SyncTUI(written, true)
+	}
 	a.PrefsError = ""
 }
 
 func (a *App) handleBoardKey(key string) {
 	switch key {
 	case "q", "Q":
-		a.Running = false
+		a.requestQuit()
 	case "left", "h", "H":
 		a.Model.MoveColumn(-1)
 	case "right", "l", "L", "tab":
@@ -551,6 +580,10 @@ func (a *App) handleBoardKey(key string) {
 		a.Help = true
 	case "y":
 		a.copySelectedTaskID()
+	case "s":
+		a.confirmSelectedStart()
+	case "g":
+		a.focusSelectedTask()
 	case "enter":
 		a.openDetail()
 	}
@@ -783,8 +816,12 @@ func (a *App) handleDetailKey(key string) {
 }
 
 func (a *App) HandleKey(key string) {
+	if a.StartConfirmation != nil {
+		a.handleStartConfirmation(key)
+		return
+	}
 	if key == "ctrl-c" {
-		a.Running = false
+		a.requestQuit()
 		return
 	}
 	// The help overlay is read-only and any key closes it.

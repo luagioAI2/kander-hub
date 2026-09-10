@@ -508,7 +508,7 @@ func TestProjectInstallPathsRejectsSymlinkTarget(t *testing.T) {
 
 func TestCursorIsAnExecutionAndReviewAgent(t *testing.T) {
 	setupHome(t)
-	if !contains(ExecutionAgents, "cursor") || !contains(ReviewAgents, "cursor") {
+	if !contains(ExecutionAgents, "cursor") || !HasReviewTemplate(nil, "cursor") {
 		t.Fatal("cursor missing")
 	}
 	if AgentExecutableName("cursor") != "cursor-agent" {
@@ -649,9 +649,11 @@ func TestCursorRejectsUnknownModelFields(t *testing.T) {
 func TestReviewStagesDefaultsAndValidation(t *testing.T) {
 	setupHome(t)
 	stages := DefaultReviewStages()
-	for _, role := range ReviewRoles {
-		if stages[role] != "auto" {
-			t.Fatalf("%s=%s", role, stages[role])
+	for _, scale := range TaskScales {
+		for _, role := range ReviewRoles {
+			if stages[scale][role] != "auto" {
+				t.Fatalf("%s.%s=%s", scale, role, stages[scale][role])
+			}
 		}
 	}
 	payload := map[string]any{
@@ -660,27 +662,6 @@ func TestReviewStagesDefaultsAndValidation(t *testing.T) {
 		"kanban_agent":     "codex",
 		"launcher":         "tmux",
 		"reviewers":        map[string]any{"PM": "codex", "CSA": "codex", "Hacker": "codex", "QA": "codex"},
-	}
-	validated, err := Validate(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, role := range ReviewRoles {
-		if validated.ReviewStages[role] != "auto" {
-			t.Fatalf("%s=%s", role, validated.ReviewStages[role])
-		}
-	}
-	payload["review_stages"] = map[string]any{"PM": "required", "CSA": "skip", "Hacker": "skip", "QA": "auto"}
-	validated, err = Validate(payload)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if validated.ReviewStages["CSA"] != "skip" {
-		t.Fatal(validated.ReviewStages)
-	}
-	payload["review_stages"] = map[string]any{"PM": "always"}
-	if _, err := Validate(payload); !IsError(err) {
-		t.Fatalf("got %v", err)
 	}
 	for _, invalid := range []any{nil, "auto", []any{}} {
 		payload["review_stages"] = invalid
@@ -844,6 +825,9 @@ func TestConfiguredLanguageRequiresWelcomeAndKey(t *testing.T) {
 	if ConfiguredLanguage() != "en" {
 		t.Fatalf("got %q", ConfiguredLanguage())
 	}
+	if ConfiguredScopeLanguage() != "en" {
+		t.Fatalf("scope got %q", ConfiguredScopeLanguage())
+	}
 	delete(payload, "language")
 	data, _ = json.Marshal(payload)
 	if err := os.WriteFile(path, data, 0o600); err != nil {
@@ -879,6 +863,18 @@ func TestLoadMissingOKAndInvalidJSON(t *testing.T) {
 	}
 	if _, err := Load(true); !IsError(err) {
 		t.Fatalf("expected read error, got %v", err)
+	}
+	if _, err := Load(false); !IsError(err) {
+		t.Fatalf("invalid JSON must fail Load(false), got %v", err)
+	}
+	if err := os.WriteFile(path, []byte(`{"language":"xx"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := Load(false); !IsError(err) {
+		t.Fatalf("schema-invalid config must fail Load(false), got %v", err)
+	}
+	if _, err := Load(true); !IsError(err) {
+		t.Fatalf("schema-invalid config must fail Load(true), got %v", err)
 	}
 }
 
@@ -918,13 +914,15 @@ func TestFormatConfigLinesAndReviewHelpers(t *testing.T) {
 	}
 	complete := DefaultConfig()
 	complete.WelcomeComplete = true
-	complete.ReviewStages["CSA"] = "skip"
-	complete.ReviewStages["PM"] = "required"
+	complete.ReviewStages["large"]["CSA"] = "skip"
+	complete.ReviewStages["large"]["PM"] = "required"
+	complete.ReviewStages["small"]["CSA"] = "skip"
+	complete.ReviewStages["small"]["PM"] = "required"
 	stageLines, err := ReviewStageLines(complete)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(stageLines, " ") != "required skip auto auto" {
+	if strings.Join(stageLines, " ") != "required skip auto auto required skip auto auto" {
 		t.Fatalf("%v", stageLines)
 	}
 	modelLines, err := ReviewModelLines(complete, "codex")
@@ -949,7 +947,7 @@ func TestLanguageNullIsRejectedWhileMissingDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if missing.Language != "cn" {
+	if missing.Language != "en" {
 		t.Fatalf("missing language=%s", missing.Language)
 	}
 	payload["language"] = nil

@@ -30,13 +30,13 @@ func safeRecordPath(root, path string) (string, error) {
 	}
 	return filepath.Join(root, path), nil
 }
-func applyRecord(root, path string, r *OperationRecord) error {
-	return applyRecordWithCheckpoint(root, path, r, func(string) error { return nil })
+func applyRecord(root, path string, r *OperationRecord, warnings ...*WarningLog) error {
+	return applyRecordWithCheckpoint(root, path, r, func(string) error { return nil }, warnings...)
 }
 
 // applyRecordWithCheckpoint exposes persisted boundaries for interruption tests;
 // the normal publisher uses a no-op checkpoint and the same filesystem steps.
-func applyRecordWithCheckpoint(root, path string, r *OperationRecord, checkpoint func(string) error) error {
+func applyRecordWithCheckpoint(root, path string, r *OperationRecord, checkpoint func(string) error, warnings ...*WarningLog) error {
 	if err := checkpoint("prepared"); err != nil {
 		return err
 	}
@@ -238,8 +238,7 @@ func applyRecordWithCheckpoint(root, path string, r *OperationRecord, checkpoint
 	if err := checkpoint("revision"); err != nil {
 		return err
 	}
-	r.Phase = "committed"
-	if err := writeOperation(root, path, r, true); err != nil {
+	if err := commitOperation(root, path, r, checkpoint, warnings...); err != nil {
 		return err
 	}
 	return checkpoint("committed")
@@ -270,18 +269,22 @@ func recoverMigrationRecords(root string, options InitOptions) (int, error) {
 	if err := requireMigrationWindow(root, records, options.Maintenance); err != nil {
 		return 0, err
 	}
+	if err := partitionJournal(root, records, options); err != nil {
+		return 0, err
+	}
 	count := 0
 	for _, record := range records {
 		if record.Phase != "prepared" {
 			continue
 		}
-		if err := applyRecord(root, control(root, "operations", record.ID+".json"), &record); err != nil {
+		if err := applyRecord(root, control(root, "operations", "pending", record.ID+".json"), &record); err != nil {
 			return count, fmt.Errorf("%s: %w", record.ID, err)
 		}
 		if record.Purpose == "migration" || len(record.Migrations) > 0 {
 			count += len(record.Revisions)
 		}
 	}
+	pruneJournal(root)
 	return count, nil
 }
 

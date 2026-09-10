@@ -1,4 +1,5 @@
-// Package config resolves the Kander install scope and reads/writes the schema-validated config.json.
+// Package config resolves the Kander install scope, merges an optional project overlay,
+// and reads/writes the schema-validated scope config.json plus sparse overlay edits.
 package config
 
 import (
@@ -28,14 +29,12 @@ const (
 )
 
 var (
-	ExecutionAgents  = []string{"codex", "claude", "grok", "cursor", "dsh"}
-	TaskScales       = []string{"large", "small"}
-	ReviewAgents     = []string{"codex", "claude", "grok", "cursor", "dsh"}
-	ReviewRoles      = []string{"PM", "CSA", "Hacker", "QA"}
+	TaskScales   = []string{"large", "small"}
+	ReviewRoles  = []string{"PM", "CSA", "Hacker", "QA"}
 	ReviewStageModes = []string{"auto", "skip", "required"}
 	Launchers        = []string{"auto", "tmux", "tmux-session", "herdr", "foreground", "console"}
 	Languages        = []string{"cn", "en", "ja"}
-	TUIThemes        = []string{"auto", "light", "dark"}
+	TUIThemes        = []string{"auto", "light", "light-warm", "light-contrast", "dark", "dark-soft", "dark-contrast"}
 )
 
 const (
@@ -50,64 +49,10 @@ const (
 	MaxTUIRefresh            = 3600
 )
 
-// AgentExecutables maps agent names used in the config and on the command line to executable names on PATH.
-var AgentExecutables = map[string]string{
-	"codex":  "codex",
-	"claude": "claude",
-	"grok":   "grok",
-	"cursor": "cursor-agent",
-	"dsh":    "dsh",
-}
-
 var modelIDFields = map[string]struct{}{
 	"model":       {},
 	"large_model": {},
 	"small_model": {},
-}
-
-// Every agent in kanbanModelDefaults carries one model per task scale:
-// large and small tasks can use different models and reasoning efforts even when they pick the same agent.
-// The retained "model" key is for legacy configs: a scale model falls back to it when empty, and new configs no longer write it.
-var kanbanModelDefaults = map[string]map[string]string{
-	"codex": {
-		"model":        "",
-		"large_model":  "gpt-5.6-sol",
-		"small_model":  "gpt-5.6-sol",
-		"large_effort": "high",
-		"small_effort": "medium",
-	},
-	"claude": {
-		"model":        "",
-		"large_model":  "opus",
-		"small_model":  "opus",
-		"large_effort": "high",
-		"small_effort": "medium",
-	},
-	"grok": {
-		"model":        "",
-		"large_model":  "",
-		"small_model":  "",
-		"large_effort": "xhigh",
-		"small_effort": "high",
-	},
-	"cursor": {
-		"large_model": "cursor-grok-4.6-xhigh",
-		"small_model": "cursor-grok-4.6-high",
-	},
-	"dsh": {
-		"large_model":  "deepseek-v4-pro",
-		"small_model":  "deepseek-v4-flash",
-		"large_effort": "max",
-		"small_effort": "high",
-	},
-}
-
-var reviewModelDefaults = map[string]map[string]string{
-	"codex":  {"model": "gpt-5.6-sol", "effort": "high"},
-	"claude": {"model": "opus", "effort": "high"},
-	"grok":   {"model": "", "effort": "high"},
-	"cursor": {"model": "cursor-grok-4.6-xhigh"},
-	"dsh":    {"model": "deepseek-v4-flash", "effort": "max"},
 }
 
 var languageLabels = map[string]string{
@@ -183,18 +128,19 @@ type TUI struct {
 
 // Config is the schema-validated configuration.
 type Config struct {
-	SchemaVersion   int               `json:"schema_version"`
-	WelcomeComplete bool              `json:"welcome_complete"`
-	KanbanAgent     string            `json:"kanban_agent"`
-	KanbanAgents    map[string]string `json:"kanban_agents"`
-	Launcher        string            `json:"launcher"`
-	Reviewers       map[string]string `json:"reviewers"`
-	ReviewStages    map[string]string `json:"review_stages"`
-	Rules           Rules             `json:"rules"`
-	Models          Models            `json:"models"`
-	TUI             TUI               `json:"tui"`
-	Language        string            `json:"language"`
-	AgentLanguage   string            `json:"agent_language"`
+	SchemaVersion   int                          `json:"schema_version"`
+	WelcomeComplete bool                         `json:"welcome_complete"`
+	KanbanAgent     string                       `json:"kanban_agent"`
+	KanbanAgents    map[string]string            `json:"kanban_agents"`
+	Launcher        string                       `json:"launcher"`
+	Reviewers       map[string]string            `json:"reviewers"`
+	ReviewStages    map[string]map[string]string `json:"review_stages"`
+	Rules           Rules                        `json:"rules"`
+	Models          Models                       `json:"models"`
+	TUI             TUI                          `json:"tui"`
+	Language        string                       `json:"language"`
+	AgentLanguage   string                       `json:"agent_language"`
+	Agents          map[string]AgentDefinition   `json:"agents,omitempty"`
 }
 
 // Clone deep-copies the config so a long-lived editing session can keep its baseline.
@@ -203,9 +149,10 @@ func Clone(src *Config) *Config {
 		return nil
 	}
 	out := *src
+	out.Agents = CloneAgents(src.Agents)
 	out.KanbanAgents = cloneStringMap(src.KanbanAgents)
 	out.Reviewers = cloneStringMap(src.Reviewers)
-	out.ReviewStages = cloneStringMap(src.ReviewStages)
+	out.ReviewStages = cloneNested(src.ReviewStages)
 	out.Rules = src.Rules.Clone()
 	out.Models = Models{
 		Kanban:      cloneNested(src.Models.Kanban),
@@ -242,8 +189,8 @@ func defaultReviewRoles() map[string]map[string]string {
 
 func DefaultModels() Models {
 	return Models{
-		Kanban:      cloneNested(kanbanModelDefaults),
-		Review:      cloneNested(reviewModelDefaults),
+		Kanban:      cloneNested(kanbanModelDefaults()),
+		Review:      cloneNested(reviewModelDefaults()),
 		ReviewRoles: defaultReviewRoles(),
 	}
 }
@@ -277,14 +224,6 @@ func ReviewModelFor(cfg *Config, agent, role string) (model, effort string) {
 	return model, effort
 }
 
-func DefaultReviewStages() map[string]string {
-	out := make(map[string]string, len(ReviewRoles))
-	for _, role := range ReviewRoles {
-		out[role] = "auto"
-	}
-	return out
-}
-
 func DefaultLauncher() string {
 	if runtime.GOOS == "windows" {
 		return "console"
@@ -293,18 +232,19 @@ func DefaultLauncher() string {
 }
 
 func DefaultConfig() *Config {
+	agent := defaultAgentName()
 	agents := make(map[string]string, len(TaskScales))
 	for _, scale := range TaskScales {
-		agents[scale] = "codex"
+		agents[scale] = agent
 	}
 	reviewers := make(map[string]string, len(ReviewRoles))
 	for _, role := range ReviewRoles {
-		reviewers[role] = "codex"
+		reviewers[role] = agent
 	}
 	return &Config{
 		SchemaVersion:   SchemaVersion,
 		WelcomeComplete: false,
-		KanbanAgent:     "codex",
+		KanbanAgent:     agent,
 		KanbanAgents:    agents,
 		Launcher:        DefaultLauncher(),
 		Reviewers:       reviewers,
@@ -312,8 +252,8 @@ func DefaultConfig() *Config {
 		Rules:           DefaultRules(true),
 		Models:          DefaultModels(),
 		TUI:             DefaultTUI(),
-		Language:        "cn",
-		AgentLanguage:   DefaultAgentLanguage("cn"),
+		Language:        "en",
+		AgentLanguage:   DefaultAgentLanguage("en"),
 	}
 }
 
@@ -360,13 +300,6 @@ func validateAgentLanguage(value any) (string, error) {
 		return "", configErrorf("config.agent_language_invalid")
 	}
 	return text, nil
-}
-
-func AgentExecutableName(agent string) string {
-	if name, ok := AgentExecutables[agent]; ok {
-		return name
-	}
-	return agent
 }
 
 func contains(list []string, value string) bool {
@@ -420,7 +353,7 @@ func CheckLauncherPlatform(launcher string) error {
 	return nil
 }
 
-func validateKanbanAgents(raw any, defaultAgent string) (map[string]string, error) {
+func validateKanbanAgents(raw any, defaultAgent string, choices ...[]string) (map[string]string, error) {
 	obj, ok := raw.(map[string]any)
 	if !ok {
 		return nil, configErrorf("config.kanban_agents_must_be_a_json_object")
@@ -448,7 +381,11 @@ func validateKanbanAgents(raw any, defaultAgent string) (map[string]string, erro
 		if _, exists := obj[scale]; !exists {
 			continue
 		}
-		agent, err := validateChoice(obj[scale], ExecutionAgents, "kanban_agents."+scale)
+		names := ExecutionAgents
+		if len(choices) > 0 {
+			names = choices[0]
+		}
+		agent, err := validateChoice(obj[scale], names, "kanban_agents."+scale)
 		if err != nil {
 			return nil, err
 		}
@@ -483,42 +420,16 @@ func ExecutionAgentsInUse(cfg *Config) []string {
 	return out
 }
 
-func validateReviewStages(raw any) (map[string]string, error) {
-	obj, ok := raw.(map[string]any)
-	if !ok {
-		return nil, configErrorf("config.review_stages_must_be_a_json_object")
-	}
-	stages := DefaultReviewStages()
-	allowed := map[string]struct{}{}
-	for _, role := range ReviewRoles {
-		allowed[role] = struct{}{}
-	}
-	var unknown []string
-	for key := range obj {
-		if _, ok := allowed[key]; !ok {
-			unknown = append(unknown, key)
-		}
-	}
-	if len(unknown) > 0 {
-		return nil, configErrorf(
-			"config.review_stages_has_unknown_roles", strings.Join(sorted(unknown), ", "),
-		)
-	}
-	for _, role := range ReviewRoles {
-		if _, exists := obj[role]; !exists {
-			continue
-		}
-		mode, err := validateChoice(obj[role], ReviewStageModes, "review_stages."+role)
-		if err != nil {
-			return nil, err
-		}
-		stages[role] = mode
-	}
-	return stages, nil
-}
-
-func validateModels(raw any) (Models, error) {
+func validateModels(raw any, definitions ...map[string]AgentDefinition) (Models, error) {
 	models := DefaultModels()
+	names := ExecutionAgents
+	reviewNames := ReviewAgentNames(nil)
+	if len(definitions) > 0 {
+		customModelDefaults(definitions[0], &models)
+		probe := &Config{Agents: definitions[0]}
+		names = AgentNames(probe)
+		reviewNames = ReviewAgentNames(probe)
+	}
 	obj, ok := raw.(map[string]any)
 	if !ok {
 		return Models{}, configErrorf("config.models_must_be_a_json_object")
@@ -542,8 +453,8 @@ func validateModels(raw any) (Models, error) {
 		// When allowEmpty is true the values of this section may be empty strings; review_roles uses an empty string to mean inherit.
 		allowEmpty bool
 	}{
-		{"kanban", ExecutionAgents, models.Kanban, false},
-		{"review", ReviewAgents, models.Review, false},
+		{"kanban", names, models.Kanban, false},
+		{"review", reviewNames, models.Review, false},
 		{"review_roles", ReviewRoles, models.ReviewRoles, true},
 	}
 	for _, section := range sections {
@@ -706,13 +617,22 @@ func Validate(raw any) (*Config, error) {
 	if !ok {
 		return nil, configErrorf("config.welcome_complete_must_be_a_boolean")
 	}
-	kanbanAgent, err := validateChoice(obj["kanban_agent"], ExecutionAgents, "kanban_agent")
+	var definitions map[string]AgentDefinition
+	var err error
+	if raw, exists := obj["agents"]; exists {
+		definitions, err = validateAgentDefinitions(raw)
+		if err != nil {
+			return nil, err
+		}
+	}
+	names := AgentNames(&Config{Agents: definitions})
+	kanbanAgent, err := validateChoice(obj["kanban_agent"], names, "kanban_agent")
 	if err != nil {
 		return nil, err
 	}
 	var kanbanAgents map[string]string
 	if _, exists := obj["kanban_agents"]; exists {
-		kanbanAgents, err = validateKanbanAgents(obj["kanban_agents"], kanbanAgent)
+		kanbanAgents, err = validateKanbanAgents(obj["kanban_agents"], kanbanAgent, names)
 		if err != nil {
 			return nil, err
 		}
@@ -731,14 +651,16 @@ func Validate(raw any) (*Config, error) {
 		return nil, configErrorf("config.reviewers_must_be_a_json_object")
 	}
 	reviewers := make(map[string]string, len(ReviewRoles))
+	reviewable := &Config{Agents: definitions}
+	reviewNames := ReviewAgentNames(reviewable)
 	for _, role := range ReviewRoles {
-		agent, err := validateChoice(reviewersRaw[role], ReviewAgents, "reviewers."+role)
+		agent, err := validateReviewerChoice(reviewersRaw[role], reviewable, "reviewers."+role, reviewNames)
 		if err != nil {
 			return nil, err
 		}
 		reviewers[role] = agent
 	}
-	var stages map[string]string
+	var stages map[string]map[string]string
 	if _, exists := obj["review_stages"]; exists {
 		stages, err = validateReviewStages(obj["review_stages"])
 		if err != nil {
@@ -756,12 +678,13 @@ func Validate(raw any) (*Config, error) {
 	}
 	var models Models
 	if _, exists := obj["models"]; exists {
-		models, err = validateModels(obj["models"])
+		models, err = validateModels(obj["models"], definitions)
 		if err != nil {
 			return nil, err
 		}
 	} else {
 		models = DefaultModels()
+		customModelDefaults(definitions, &models)
 	}
 	tui := DefaultTUI()
 	if _, exists := obj["tui"]; exists {
@@ -772,7 +695,7 @@ func Validate(raw any) (*Config, error) {
 	}
 	languageRaw, hasLanguage := obj["language"]
 	if !hasLanguage {
-		languageRaw = "cn"
+		languageRaw = "en"
 	}
 	language, err := validateChoice(languageRaw, Languages, "language")
 	if err != nil {
@@ -799,6 +722,7 @@ func Validate(raw any) (*Config, error) {
 		TUI:             tui,
 		Language:        language,
 		AgentLanguage:   agentLanguage,
+		Agents:          definitions,
 	}, nil
 }
 

@@ -43,6 +43,7 @@ func (s AgentSession) Render() string {
 
 // LaunchPlan is the result of the launcher preflight checks run before claiming; a failed check does not claim the card.
 type LaunchPlan struct {
+	warning        func(string)
 	Launcher       string
 	Project        string
 	Tmux           string
@@ -62,6 +63,8 @@ type LaunchPlan struct {
 	// sandbox/approval mode is only configurable through the
 	// DSH_PERMISSION_MODE environment variable its profile reads.
 	Env map[string]string
+	PromptDelivery config.PromptDelivery
+	Prompt         string
 }
 
 // LaunchOutcome is the process or terminal address of one launch.
@@ -76,8 +79,9 @@ type LaunchOutcome struct {
 
 // LaunchFailure is a failed launch, together with the result of closing the container created by this attempt.
 type LaunchFailure struct {
-	Err        error
-	CloseError string
+	DeliveryUnknown bool
+	Err             error
+	CloseError      string
 }
 
 func (f *LaunchFailure) Error() string {
@@ -114,7 +118,7 @@ var (
 	createTaskFile      = process.CreateTaskFile
 	removeTaskFile      = os.Remove
 	taskInstruction     = process.TaskFileInstruction
-	loadEffective       = func() (*config.Config, error) { return config.Effective(nil) }
+	loadEffective       = func() (*config.Config, error) { return config.Load(false) }
 	currentInstallPaths = config.CurrentInstallPaths
 	nowStamp            = func() string { return time.Now().Format("2006-01-02 15:04") }
 	newUUID             = randomUUID

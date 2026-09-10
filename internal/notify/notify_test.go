@@ -52,6 +52,13 @@ func setupBoard(t *testing.T) (root, fakeBin string) {
 	}
 	root = t.TempDir()
 	t.Setenv(config.EnvConfig, filepath.Join(root, "config.json"))
+	cfg := config.DefaultConfig()
+	cfg.WelcomeComplete = true
+	cfg.Language = "cn"
+	cfg.AgentLanguage = "zh-CN"
+	if _, err := config.Save(cfg); err != nil {
+		t.Fatal(err)
+	}
 	for _, state := range board.States {
 		if err := os.Mkdir(filepath.Join(root, state), 0o755); err != nil {
 			t.Fatal(err)
@@ -191,6 +198,9 @@ if [ "$1" = "send-keys" ]; then
   exit 0
 fi
 if [ "$1" = "capture-pane" ]; then
+  if [ ! -f "$log.send" ]; then
+    printf '%s\n' "$@" >> "$log.capture-before-send"
+  fi
   cat "$log.send" 2>/dev/null
   printf '\n'
   exit 0

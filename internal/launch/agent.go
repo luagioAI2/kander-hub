@@ -3,6 +3,7 @@ package launch
 import (
 	"fmt"
 	"math"
+	"os"
 	"path/filepath"
 	"time"
 
@@ -19,9 +20,17 @@ func launchAgent(
 	location func(LaunchOutcome) error,
 	paneSession func() (AgentSession, error),
 	agentSession *AgentSession,
+	durable ...bool,
 ) (LaunchOutcome, error) {
 	var createdTab, createdWindow string
+	sendAttempted := false
 	fail := func(err error) error {
+		// Pane delivery fails before the prompt is sent (blocked or ready
+		// timeout). That outcome is known, so close the container even on a
+		// durable dispatch instead of leaving a stuck tab and an unrolled card.
+		if sendAttempted && len(durable) > 0 && durable[0] && plan.PromptDelivery.Mode != "pane" {
+			return &LaunchFailure{Err: err, DeliveryUnknown: true}
+		}
 		var closeErr string
 		if createdTab != "" {
 			closeErr = herdrCloseTab(plan.HerdrBin, createdTab)
@@ -41,6 +50,11 @@ func launchAgent(
 	if err != nil {
 		return LaunchOutcome{}, fail(err)
 	}
+	paneDelivery := plan.PromptDelivery.Mode == "pane"
+	locateNow := location
+	if paneDelivery {
+		locateNow = nil
+	}
 	if plan.Launcher == "herdr" {
 		tab, pane, err := herdrCreateTab(plan.HerdrBin, plan.HerdrWorkspace, filepath.Dir(root), name)
 		if err != nil {
@@ -51,16 +65,31 @@ func launchAgent(
 			return LaunchOutcome{}, fail(err)
 		}
 		outcome := LaunchOutcome{Tab: tab, Pane: pane}
-		if location != nil {
-			if err := location(outcome); err != nil {
+		if locateNow != nil {
+			if err := locateNow(outcome); err != nil {
 				return LaunchOutcome{}, fail(err)
 			}
 		}
+		sendAttempted = true
 		if err := herdrPaneRun(plan.HerdrBin, pane, command); err != nil {
 			return LaunchOutcome{}, fail(err)
 		}
+		if paneDelivery {
+			if err := completePaneDelivery(plan, outcome); err != nil {
+				return LaunchOutcome{}, fail(err)
+			}
+			if location != nil {
+				if err := location(outcome); err != nil {
+					return LaunchOutcome{}, fail(err)
+				}
+			}
+		}
 		if agentSession != nil {
-			reportHerdrAgentSession(plan.HerdrBin, pane, *agentSession)
+			warn := plan.warning
+			if warn == nil {
+				warn = func(message string) { fmt.Fprint(os.Stderr, message) }
+			}
+			reportHerdrAgentSession(plan.HerdrBin, pane, *agentSession, warn)
 		}
 		return outcome, nil
 	}
@@ -101,13 +130,24 @@ func launchAgent(
 		}
 	}
 	outcome := LaunchOutcome{Window: window, Pane: pane}
-	if location != nil {
-		if err := location(outcome); err != nil {
+	if locateNow != nil {
+		if err := locateNow(outcome); err != nil {
 			return LaunchOutcome{}, fail(err)
 		}
 	}
+	sendAttempted = true
 	if err := tmuxStartPane(plan.Tmux, pane, command); err != nil {
 		return LaunchOutcome{}, fail(err)
+	}
+	if paneDelivery {
+		if err := completePaneDelivery(plan, outcome); err != nil {
+			return LaunchOutcome{}, fail(err)
+		}
+		if location != nil {
+			if err := location(outcome); err != nil {
+				return LaunchOutcome{}, fail(err)
+			}
+		}
 	}
 	if paneSession != nil {
 		sess, err := paneSession()
@@ -254,8 +294,21 @@ func validateLivenessTimeout(timeout float64, command string) error {
 }
 
 func validateResumedAgent(plan LaunchPlan, outcome LaunchOutcome, session AgentSession, timeout float64) error {
+	return validateResumedAgentReceipt(plan, outcome, session, timeout, nil)
+}
+
+func validateResumedAgentReceipt(plan LaunchPlan, outcome LaunchOutcome, session AgentSession, timeout float64, receipt func() (bool, error)) error {
 	deadline := nowFn().Add(time.Duration(timeout * float64(time.Second)))
 	for {
+		if receipt != nil {
+			consumed, err := receipt()
+			if err != nil {
+				return err
+			}
+			if consumed {
+				return nil
+			}
+		}
 		if plan.Launcher == "foreground" || plan.Launcher == "console" {
 			if outcome.Poll != nil {
 				if code := outcome.Poll(); code != nil {

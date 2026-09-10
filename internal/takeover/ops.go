@@ -3,7 +3,6 @@ package takeover
 import (
 	"fmt"
 	"os/exec"
-	"path/filepath"
 	"strings"
 	"time"
 
@@ -30,21 +29,18 @@ func takeoverError(id string, args ...any) error {
 	return &notify.Error{Message: config.Text(id, args...)}
 }
 
-var agentExitCommands = map[string]string{
-	"claude": "/exit",
-	"codex":  "/exit",
-	"grok":   "/quit",
-	"cursor": "/quit",
-	"dsh":    "/exit",
-}
-
-// AgentExitCommand returns /exit for Claude/Codex/DSH or /quit for Grok/Cursor.
+// AgentExitCommand reads exit_command from the resolved agent definition,
+// including dialect inheritance. An omitted or empty value is refused so
+// dismiss keeps the container.
 func AgentExitCommand(agent string) (string, error) {
-	cmd, ok := agentExitCommands[agent]
-	if !ok {
-		return "", takeoverError("launch.unsupported_agent", agent)
+	definition, err := config.LoadAgent(agent)
+	if err != nil {
+		return "", err
 	}
-	return cmd, nil
+	if definition.ExitCommand == nil || *definition.ExitCommand == "" {
+		return "", takeoverError("takeover.agent_exit_command_missing", agent)
+	}
+	return *definition.ExitCommand, nil
 }
 
 func herdrFailureDetail(res probe.Result) string {
@@ -219,8 +215,9 @@ func orNA(v string) string {
 	return v
 }
 
-func agentCommandName(agent string) string {
-	return filepath.Base(config.AgentExecutableName(agent))
+func agentCommandName(agent string) (string, error) {
+	definition, err := config.LoadAgent(agent)
+	return definition.ProcessName, err
 }
 
 func toLive(session launch.AgentSession) liveness.TaskSession {

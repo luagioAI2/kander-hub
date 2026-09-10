@@ -6,14 +6,18 @@ This entry only locates and loads rules on demand; it does not take over the dev
 
 The directory containing this file is the "rules root". It determines the scope and the paths below:
 
-| Logical name  | Global install                 | Project install                     |
-| ------------- | ------------------------------ | ----------------------------------- |
-| Rules root    | `~/.agents`                    | `<main worktree>/.kander/rules`     |
-| Command root  | `~/.local/bin`                 | `<main worktree>/.kander/bin`       |
-| Config file   | `~/.config/kander/config.json` | `<main worktree>/.kander/config.json` |
-| Share dir     | `~/.local/share/kander`        | `<main worktree>/.kander/share`     |
+| Logical name    | Global install                 | Project install                     |
+| --------------- | ------------------------------ | ----------------------------------- |
+| Rules root      | `~/.agents`                    | `<main worktree>/.kander/rules`     |
+| Command root    | `~/.local/bin`                 | `<main worktree>/.kander/bin`       |
+| Config file     | `~/.config/kander/config.json` | `<main worktree>/.kander/config.json` |
+| Share dir       | `~/.local/share/kander`        | `<main worktree>/.kander/share`     |
+| Project overlay | `<main worktree>/.kander-config.json` (non-Git: first file found walking up from cwd) | same |
 
-- All settings live in the config file.
+- Scope settings live in the config file. An optional project overlay is merged on top at read time.
+- Runtime priority is project overlay > scope config (`KANDER_CONFIG` or the install-scope `config.json`) > defaults.
+- Writes (`Save`, `Update`, `kander doctor` repair, the Global tab of the options panel, and the installer) only update the scope `config.json`. The Project tab writes only the project overlay `.kander-config.json` and never writes `.kander/config.json`. Overlay values are merged at read time by key presence; they are not copied wholesale into the scope file.
+- The overlay may set `agents` executable paths and argv templates. That is accepted at the same trust level as checking out and running the repository's own code.
 - A project install keeps its payload only in the main worktree's `.kander/`; task worktrees share it and create no copies, mirrors, or symlinks.
 - Below and in every rule file, `kander` means the entry of the current scope. A global install may use the absolute path under the command root or a `kander` already on PATH; a project install must use the absolute path `<command root>/kander` (`<command root>\kander` on Windows) and must not substitute a global command from PATH.
 
@@ -46,7 +50,8 @@ The directory containing this file is the "rules root". It determines the scope 
 
 - Read `KANDER-KANBAN-RULES.md` whenever kanban commands are used.
 - `task_groups` depends on `git`.
-- With `task_intake` off, cards can still be created manually and run one at a time.
+- `review` reads the "Delivery Self-Check" of `KANDER-CODE-RULES.md` only when `code` is also on; with `code` off, `KANDER-REVIEW-RULES.md` "Preconditions and Execution" states what the author checks before review instead.
+- With `task_intake` off, no plan options are presented and cards are created manually; a task group is still possible when `task_groups` is on.
 - With `git` off, a single card follows the user's own working directory, branch, and delivery flow.
 - With `review` off, no review is requested automatically, but `kander review` may still be invoked explicitly.
 - With `reporting` off, filling in real card results and the necessary execution records is still required.

@@ -2,6 +2,7 @@ package config
 
 import (
 	"bytes"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"testing"
@@ -119,5 +120,110 @@ func TestSetLanguageIfPresent(t *testing.T) {
 	}
 	if err := SetLanguageIfPresent(path, "nope"); err == nil {
 		t.Fatal("invalid language")
+	}
+}
+
+func TestRepairFillsMissingReviewStageScaleFromTheOther(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv(EnvConfig, path)
+	original := []byte(`{
+		"schema_version": 1, "welcome_complete": true, "kanban_agent": "codex",
+		"launcher": "foreground",
+		"reviewers": {"PM":"codex","CSA":"codex","Hacker":"codex","QA":"codex"},
+		"review_stages": {"large": {"PM":"required","CSA":"skip","Hacker":"skip","QA":"auto"}}
+	}`)
+	if err := os.WriteFile(path, original, 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, result, err := Repair(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Changed {
+		t.Fatal("missing small scale must be rewritten")
+	}
+	if cfg.ReviewStages["large"]["PM"] != "required" || cfg.ReviewStages["small"]["PM"] != "required" {
+		t.Fatalf("missing scale not copied: %+v", cfg.ReviewStages)
+	}
+	if cfg.ReviewStages["small"]["CSA"] != "skip" {
+		t.Fatalf("copied scale incomplete: %+v", cfg.ReviewStages["small"])
+	}
+
+	emptyPath := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv(EnvConfig, emptyPath)
+	if err := os.WriteFile(emptyPath, []byte(`{
+		"schema_version": 1, "welcome_complete": true, "kanban_agent": "codex",
+		"launcher": "foreground",
+		"reviewers": {"PM":"codex","CSA":"codex","Hacker":"codex","QA":"codex"}
+	}`), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	cfg, _, err = Repair(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, scale := range TaskScales {
+		for _, role := range ReviewRoles {
+			if cfg.ReviewStages[scale][role] != "auto" {
+				t.Fatalf("both missing must default %s.%s=%s", scale, role, cfg.ReviewStages[scale][role])
+			}
+		}
+	}
+}
+
+func TestRepairWritesWhenOnlyOneReviewStageScaleIsMissing(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "config.json")
+	t.Setenv(EnvConfig, path)
+	complete := DefaultConfig()
+	complete.WelcomeComplete = true
+	complete.ReviewStages["large"]["PM"] = "required"
+	complete.ReviewStages["small"]["PM"] = "required"
+	if _, err := Save(complete); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := decodeJSON(data)
+	if err != nil {
+		t.Fatal(err)
+	}
+	obj, ok := asObject(raw)
+	if !ok {
+		t.Fatal(raw)
+	}
+	stages, ok := asObject(obj["review_stages"])
+	if !ok {
+		t.Fatal(obj["review_stages"])
+	}
+	delete(stages, "small")
+	trimmed, err := json.MarshalIndent(obj, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, append(trimmed, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	repaired, result, err := Repair(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !result.Changed {
+		t.Fatal("a normalized config missing only small must be rewritten")
+	}
+	if repaired.ReviewStages["small"]["PM"] != "required" {
+		t.Fatalf("in-memory small=%v", repaired.ReviewStages["small"])
+	}
+	onDisk, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	loaded, err := ValidateJSON(onDisk)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if loaded.ReviewStages["small"]["PM"] != "required" {
+		t.Fatalf("disk small=%v", loaded.ReviewStages["small"])
 	}
 }

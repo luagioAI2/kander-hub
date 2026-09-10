@@ -23,21 +23,38 @@ type ModelField struct {
 	Short string
 	// Agent is the object this field belongs to (an agent on the execution side, a role on the review side),
 	// and together with field it forms the deduplication key.
-	Agent  string
-	Prompt string
-	entry  map[string]string
-	field  string
+	Agent       string
+	Prompt      string
+	entry       map[string]string
+	field       string
+	get         func() string
+	set         func(string)
+	Placeholder string
 }
 
 // Key uniquely identifies one config item. When two task scales or two review roles pick the same agent,
 // they point at the very same config entry, which must appear only once in the UI.
 func (f ModelField) Key() string { return f.Agent + "." + f.field }
 
+// FieldName is the config key this field writes (model, effort, path, ...).
+func (f ModelField) FieldName() string { return f.field }
+
 // Value returns the current value of the field; an empty string means the CLI default is used.
-func (f ModelField) Value() string { return f.entry[f.field] }
+func (f ModelField) Value() string {
+	if f.get != nil {
+		return f.get()
+	}
+	return f.entry[f.field]
+}
 
 // Set writes the field.
-func (f ModelField) Set(value string) { f.entry[f.field] = value }
+func (f ModelField) Set(value string) {
+	if f.set != nil {
+		f.set(value)
+		return
+	}
+	f.entry[f.field] = value
+}
 
 // Session carries the editable config of the options panel plus the one-shot environment probe results.
 type Session struct {
@@ -45,11 +62,27 @@ type Session struct {
 	Config *config.Config
 	// Warnings are environment warnings raised while constructing the session; the caller decides how to display them.
 	Warnings []ReportLine
+	// Target is config.TargetScope (Global tab) or config.TargetOverlay (Project tab).
+	Target string
+	// InstallMode comes from config.CurrentInstallPaths and selects the visible tabs.
+	InstallMode config.Mode
+	// OverlayLocation is the Project-tab read/write target, including when the file does not exist.
+	OverlayLocation config.OverlayLocation
+	// BasePath is the actual scope file in force, including KANDER_CONFIG.
+	BasePath     string
+	ScopeDirty   bool
+	OverlayDirty bool
 
-	existing *config.Config
-	agents   map[string]agentState
-	exec     []Choice
-	review   []Choice
+	existing        *config.Config
+	scopeConfig     *config.Config
+	scopeExisting   *config.Config
+	scopeRaw        map[string]any
+	overlayRaw      map[string]any
+	overlayExisting map[string]any
+	overlayDraft    bool
+	agents          map[string]agentState
+	exec            []Choice
+	review          []Choice
 }
 
 // NewSession probes agents and launchers, and prepares the editable config from existing.
@@ -65,7 +98,7 @@ func NewSession(existing *config.Config, configValid bool) (*Session, error) {
 }
 
 func (s *Session) prepare(configValid bool) error {
-	s.agents = findAgents()
+	s.agents = findAgents(s.existing)
 	labels := agentLabels()
 	for name, state := range s.agents {
 		if state.Path != "" && !agentUsable(state) {
@@ -74,20 +107,28 @@ func (s *Session) prepare(configValid bool) error {
 			))
 		}
 	}
-	for _, name := range config.ExecutionAgents {
+	firstExecution := ""
+	for _, name := range config.AgentNames(s.existing) {
 		state := s.agents[name]
-		if agentUsable(state) {
-			s.exec = append(s.exec, Choice{Value: name, Label: labels[name] + " (" + state.Version + ")"})
+		if labels[name] == "" {
+			labels[name] = name
 		}
+		label := labels[name] + config.Text("menu.not_currently_installed")
+		if agentUsable(state) {
+			if firstExecution == "" {
+				firstExecution = name
+			}
+			label = labels[name] + " (" + state.Version + ")"
+		}
+		// Unavailable agents remain selectable so their executable can be configured.
+		s.exec = append(s.exec, Choice{Value: name, Label: label})
 	}
-	if len(s.exec) == 0 && !s.existing.WelcomeComplete {
-		return errors.New(config.Text(
-			"menu.no_usable_agent_found_version_must_succeed_install_codex",
-		))
+	if firstExecution == "" && !s.existing.WelcomeComplete {
+		return errors.New(config.Text("menu.no_usable_agent_found_version_must_succeed_install_codex"))
 	}
-	for _, name := range config.ReviewAgents {
-		if agentUsable(s.agents[name]) {
-			s.review = append(s.review, Choice{Value: name, Label: labels[name] + " (" + s.agents[name].Version + ")"})
+	for _, name := range config.ReviewAgentNames(s.existing) {
+		if reviewerUsable(s.agents[name]) {
+			s.review = append(s.review, Choice{Value: name, Label: labels[name] + " (" + reviewerState(s.agents[name]).Version + ")"})
 		}
 	}
 	if len(s.review) == 0 && !s.existing.WelcomeComplete {
@@ -97,6 +138,7 @@ func (s *Session) prepare(configValid bool) error {
 	}
 
 	cfg := config.DefaultConfig()
+	cfg.Agents = config.CloneAgents(s.existing.Agents)
 	cfg.Models = copyModels(s.existing.Models)
 	cfg.KanbanAgent = s.existing.KanbanAgent
 	cfg.AgentLanguage = s.existing.AgentLanguage
@@ -106,7 +148,7 @@ func (s *Session) prepare(configValid bool) error {
 	}
 	if !s.existing.WelcomeComplete {
 		if !agentUsable(s.agents[cfg.KanbanAgent]) {
-			cfg.KanbanAgent = s.exec[0].Value
+			cfg.KanbanAgent = firstExecution
 		}
 		for _, scale := range config.TaskScales {
 			if !agentUsable(s.agents[cfg.KanbanAgents[scale]]) {
@@ -118,7 +160,7 @@ func (s *Session) prepare(configValid bool) error {
 	for _, role := range config.ReviewRoles {
 		previous := s.existing.Reviewers[role]
 		cfg.Reviewers[role] = previous
-		if !s.existing.WelcomeComplete && !agentUsable(s.agents[previous]) {
+		if !s.existing.WelcomeComplete && !reviewerUsable(s.agents[previous]) {
 			cfg.Reviewers[role] = s.review[0].Value
 		}
 	}
@@ -126,22 +168,54 @@ func (s *Session) prepare(configValid bool) error {
 	s.normalizeLauncher(cfg)
 	cfg.TUI = s.existing.TUI
 	cfg.Rules = s.existing.Rules.Clone()
-	cfg.ReviewStages = map[string]string{}
-	for k, v := range s.existing.ReviewStages {
-		cfg.ReviewStages[k] = v
-	}
+	cfg.ReviewStages = cloneReviewStages(s.existing.ReviewStages)
 	if configValid {
-		if stored := config.ConfiguredLanguage(); stored != "" {
+		if stored := config.ConfiguredScopeLanguage(); stored != "" {
 			cfg.Language = stored
 		} else {
-			cfg.Language = config.ResolveLanguage()
+			cfg.Language = config.ResolveScopeLanguage()
 		}
 	} else {
-		cfg.Language = config.ResolveLanguage()
+		cfg.Language = config.ResolveScopeLanguage()
 	}
-	config.BindConfigLanguage(cfg)
+	// Build the scope buffer from its explicit language or CLI/env fallback.
+	// loadOverlayContext selects the merged buffer for a project install.
+	// Callers bind the UI language after they accept this session.
 	s.Config = cfg
-	return nil
+	s.initOverlayState()
+	return s.loadOverlayContext()
+}
+
+// RefreshCopy re-translates cached agent labels after the UI language changes.
+// Sessions built without a probe keep their existing labels.
+func (s *Session) RefreshCopy() {
+	if s == nil || s.agents == nil {
+		return
+	}
+	labels := agentLabels()
+	for i, choice := range s.exec {
+		name := choice.Value
+		label := labels[name]
+		if label == "" {
+			label = name
+		}
+		state := s.agents[name]
+		if agentUsable(state) {
+			s.exec[i].Label = label + " (" + state.Version + ")"
+			continue
+		}
+		s.exec[i].Label = label + config.Text("menu.not_currently_installed")
+	}
+	for i, choice := range s.review {
+		name := choice.Value
+		label := labels[name]
+		if label == "" {
+			label = name
+		}
+		if reviewerUsable(s.agents[name]) {
+			s.review[i].Label = label + " (" + reviewerState(s.agents[name]).Version + ")"
+		}
+	}
 }
 
 func (s *Session) normalizeLauncher(cfg *config.Config) {
@@ -195,32 +269,47 @@ func (s *Session) ReviewerChoicesFor(current string) []Choice {
 func (s *Session) SetExecutionAgent(scale, agent string) {
 	s.Config.KanbanAgents[scale] = agent
 	s.Config.KanbanAgent = s.Config.KanbanAgents["large"]
+	s.noteOverride([]string{"kanban_agents", scale}, agent)
 }
 
 // SetReviewer sets the reviewer of one review role.
 func (s *Session) SetReviewer(role, agent string) {
 	s.Config.Reviewers[role] = agent
+	s.noteOverride([]string{"reviewers", role}, agent)
 }
 
-// SetReviewStage sets the default stage policy of one review role.
-func (s *Session) SetReviewStage(role, mode string) {
-	s.Config.ReviewStages[role] = mode
+// SetReviewStage sets the stage policy of one review role for one task scale.
+func (s *Session) SetReviewStage(scale, role, mode string) {
+	if s.Config.ReviewStages == nil {
+		s.Config.ReviewStages = map[string]map[string]string{}
+	}
+	if s.Config.ReviewStages[scale] == nil {
+		s.Config.ReviewStages[scale] = map[string]string{}
+	}
+	s.Config.ReviewStages[scale][role] = mode
+	if s.EditingOverlay() {
+		s.expandOverlayReviewStages()
+	}
+	s.noteOverride([]string{"review_stages", scale, role}, mode)
 }
 
 // SetLanguage sets the default output language and applies it immediately.
 func (s *Session) SetLanguage(language string) {
 	s.Config.Language = language
+	s.noteOverride([]string{"language"}, language)
 	config.BindConfigLanguage(s.Config)
 }
 
 // SetAgentLanguage sets the language the agent uses when talking to the user.
 func (s *Session) SetAgentLanguage(language string) {
 	s.Config.AgentLanguage = strings.TrimSpace(language)
+	s.noteOverride([]string{"agent_language"}, s.Config.AgentLanguage)
 }
 
 // SetLauncher sets the launcher.
 func (s *Session) SetLauncher(launcher string) {
 	s.Config.Launcher = launcher
+	s.noteOverride([]string{"launcher"}, launcher)
 }
 
 // LauncherInstallValue is the value of the "install tmux" item in the launcher list.
@@ -314,6 +403,12 @@ func (s *Session) ExecutionModelFieldsFor(scale string) []ModelField {
 		}
 	}
 	label := agentLabels()[agent]
+	if label == "" {
+		label = agent
+	}
+	if s.Config.Models.Kanban[agent] == nil {
+		s.Config.Models.Kanban[agent] = map[string]string{}
+	}
 	scaleLabel := config.Text("menu.large_task")
 	if scale == "small" {
 		scaleLabel = config.Text("menu.small_task")
@@ -322,7 +417,7 @@ func (s *Session) ExecutionModelFieldsFor(scale string) []ModelField {
 		config.Text("menu.kanban_model", label, scaleLabel),
 		config.Text("menu.model", label, scaleLabel),
 		config.Text("menu.full_model_id_for_s", scaleLabel))}
-	if agent == "cursor" {
+	if !config.AgentSupportsEffort(s.Config, agent) {
 		return fields
 	}
 	return append(fields, s.kanbanModelField(agent, scale+"_effort",
@@ -364,7 +459,7 @@ func (s *Session) ReviewModelFieldsFor(role string) []ModelField {
 		entry:  entry,
 		field:  "model",
 	}}
-	if reviewer == "cursor" {
+	if !config.ReviewModelSupportsEffort(s.Config, reviewer) {
 		return fields
 	}
 	return append(fields, ModelField{
@@ -397,8 +492,19 @@ func (s *Session) seedReviewRole(role, reviewer string) map[string]string {
 // ResetReviewRoleModel resets the model and reasoning effort of one role to the defaults of its new reviewer.
 // Call it when a role changes reviewer: the old values were configured for the old reviewer and would otherwise be misattributed.
 func (s *Session) ResetReviewRoleModel(role string) {
+	if s.EditingOverlay() {
+		_ = s.applyOverlayEdit(func(candidate map[string]any) {
+			config.OverlayDelete(candidate, "models", "review_roles", role)
+		})
+		return
+	}
 	s.Config.Models.ReviewRoles[role] = map[string]string{}
-	s.seedReviewRole(role, s.Config.Reviewers[role])
+	entry := s.seedReviewRole(role, s.Config.Reviewers[role])
+	rawEntry := map[string]any{}
+	for key, value := range entry {
+		rawEntry[key] = value
+	}
+	s.noteOverride([]string{"models", "review_roles", role}, rawEntry)
 }
 
 // ReviewModelFields is the flattened, order-preserving deduplication of the per-role fields, for the line-based menu.
@@ -439,6 +545,9 @@ func (s *Session) finish() error {
 	seen := map[string]struct{}{}
 	for _, selected := range config.ExecutionAgentsInUse(s.Config) {
 		target := install.AgentRulesTarget(selected, paths)
+		if target == "" {
+			continue
+		}
 		if _, ok := seen[target]; ok && target != "" {
 			continue
 		}
@@ -461,17 +570,18 @@ func (s *Session) finish() error {
 		"menu.note_kanban_start_uses_the_agent_s_no_confirmation",
 	))
 	note(RulesSessionNotice())
-	s.Config.WelcomeComplete = true
+	if !s.EditingOverlay() {
+		s.Config.WelcomeComplete = true
+	}
 	return nil
 }
 
-// Save writes the current config to disk and returns the config file path.
+// Save writes the active tab: scope config.json or the project overlay.
 func (s *Session) Save() (string, error) {
-	path, err := config.SaveIfUnchanged(s.Config, s.existing)
-	if err == nil {
-		s.existing = config.Clone(s.Config)
+	if s.EditingOverlay() {
+		return s.saveOverlay()
 	}
-	return path, err
+	return s.saveScope()
 }
 
 // Summary returns the "current configuration" overview shown in the menu title and at the top of the panel.
@@ -481,7 +591,7 @@ func (s *Session) Summary() []string {
 	lines = append(lines, config.Text("rules.modules")+": "+config.FormatRulesSummary(cfg.Rules))
 	for _, agent := range config.ExecutionAgentsInUse(cfg) {
 		entry := cfg.Models.Kanban[agent]
-		lines = append(lines, "  kanban "+agent+": "+config.FormatKanbanModelSummary(agent, entry))
+		lines = append(lines, "  kanban "+agent+": "+config.FormatKanbanModelSummary(s.Config, agent, entry))
 	}
 	seen := map[string]struct{}{}
 	for _, role := range config.ReviewRoles {
@@ -521,24 +631,29 @@ func indexLabel(index int) string {
 func NewSessionForTest(existing *config.Config) (*Session, error) {
 	session := &Session{existing: existing}
 	labels := agentLabels()
-	for _, name := range config.ExecutionAgents {
+	for _, name := range config.AgentNames(existing) {
 		session.exec = append(session.exec, Choice{Value: name, Label: labels[name]})
 	}
-	for _, name := range config.ReviewAgents {
+	for _, name := range config.ReviewAgentNames(existing) {
 		session.review = append(session.review, Choice{Value: name, Label: labels[name]})
 	}
 	cfg := config.DefaultConfig()
+	cfg.Agents = config.CloneAgents(existing.Agents)
 	cfg.Models = copyModels(existing.Models)
 	cfg.KanbanAgent = existing.KanbanAgent
 	cfg.KanbanAgents = cloneStrings(existing.KanbanAgents)
 	cfg.Reviewers = cloneStrings(existing.Reviewers)
-	cfg.ReviewStages = cloneStrings(existing.ReviewStages)
+	cfg.ReviewStages = cloneReviewStages(existing.ReviewStages)
 	cfg.Rules = existing.Rules.Clone()
 	cfg.Launcher = existing.Launcher
 	cfg.TUI = existing.TUI
 	cfg.Language = existing.Language
 	cfg.AgentLanguage = existing.AgentLanguage
 	session.Config = cfg
+	session.initOverlayState()
+	if path, err := config.ConfigPath(); err == nil {
+		session.BasePath = path
+	}
 	return session, nil
 }
 
@@ -546,6 +661,14 @@ func cloneStrings(src map[string]string) map[string]string {
 	out := make(map[string]string, len(src))
 	for k, v := range src {
 		out[k] = v
+	}
+	return out
+}
+
+func cloneReviewStages(src map[string]map[string]string) map[string]map[string]string {
+	out := make(map[string]map[string]string, len(src))
+	for scale, roles := range src {
+		out[scale] = cloneStrings(roles)
 	}
 	return out
 }

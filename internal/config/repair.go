@@ -97,7 +97,12 @@ func repairValues(raw any) (*Config, error) {
 	if lang := CLILanguage(); contains(Languages, lang) {
 		defaults.Language = lang
 	}
-	provided, _ := asObject(raw)
+	provided, ok := asObject(raw)
+	if ok {
+		// Clone so later review_stages backfill cannot alias the raw map that
+		// repairAt compares against the encoded result to decide whether to write.
+		provided = cloneRawObjectDeep(provided)
+	}
 	// A missing agent_language follows the interface language the config will end up with, so a Chinese
 	// config repaired by doctor keeps talking Chinese instead of picking up doctor's English default.
 	if lang, err := validateChoice(provided["language"], Languages, "language"); err == nil {
@@ -115,7 +120,24 @@ func repairValues(raw any) (*Config, error) {
 			defaults.Rules = legacyRules()
 		}
 	}
-	if agent, err := validateChoice(provided["kanban_agent"], ExecutionAgents, "kanban_agent"); err == nil {
+	if raw, ok := provided["agents"]; ok {
+		definitions, err := validateAgentDefinitions(raw)
+		if err != nil {
+			return nil, err
+		}
+		defaults.Agents = definitions
+		customModelDefaults(definitions, &defaults.Models)
+	}
+	if rawReviewers, ok := asObject(provided["reviewers"]); ok {
+		probe := &Config{Agents: defaults.Agents}
+		for _, role := range ReviewRoles {
+			agent, _ := rawReviewers[role].(string)
+			if agent != "" && HasAgent(probe, agent) && !HasReviewTemplate(probe, agent) {
+				return nil, configErrorf("config.reviewer_missing_template", "reviewers."+role, agent)
+			}
+		}
+	}
+	if agent, err := validateChoice(provided["kanban_agent"], AgentNames(defaults), "kanban_agent"); err == nil {
 		defaults.KanbanAgent = agent
 		for _, scale := range TaskScales {
 			defaults.KanbanAgents[scale] = agent
@@ -130,8 +152,32 @@ func repairValues(raw any) (*Config, error) {
 		return nil, err
 	}
 	root, _ := asObject(decoded)
+	fillMissingReviewStageScales(provided)
 	recoverConfigFields(root, provided, root)
 	return Validate(root)
+}
+
+// fillMissingReviewStageScales copies the present scale onto a missing one so
+// doctor preserves a one-sided review_stages object instead of replacing the
+// gap with defaults. Both missing keeps the encoded defaults.
+func fillMissingReviewStageScales(provided map[string]any) {
+	raw, exists := provided["review_stages"]
+	if !exists {
+		return
+	}
+	normalized, err := NormalizeReviewStages(raw)
+	if err != nil {
+		return
+	}
+	large, hasLarge := asObject(normalized["large"])
+	small, hasSmall := asObject(normalized["small"])
+	switch {
+	case hasLarge && !hasSmall:
+		normalized["small"] = cloneRawObject(large)
+	case hasSmall && !hasLarge:
+		normalized["large"] = cloneRawObject(small)
+	}
+	provided["review_stages"] = normalized
 }
 
 // A wholly valid section is accepted as is; otherwise it is restored key by key from the default schema, and validation always goes through Validate.

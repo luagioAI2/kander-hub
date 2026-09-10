@@ -19,6 +19,7 @@ const (
 	sectionExecution = "execution"
 	sectionReview    = "review"
 	sectionRules     = "rules"
+	sectionFlow      = "flow"
 	sectionDoctor    = "doctor"
 	sectionSave      = "save"
 	sectionClose     = "close"
@@ -40,6 +41,12 @@ type optionsPanel struct {
 	app     *App
 	session *menu.Session
 	loadErr string
+	loadSeq uint64
+	// loadedTUI tracks accepted form values for the current edit target.
+	// Rebuilding or switching the form must not manufacture an interface edit.
+	loadedTUI config.TUI
+	// appliedTUI is the last TUI actually pushed to the board; nil until the user edits a field.
+	appliedTUI *config.TUI
 
 	form        *huh.Form
 	formTheme   *huh.Theme
@@ -63,6 +70,10 @@ type optionsPanel struct {
 	installHerdr bool
 	dirty        bool
 	initial      string
+	// overlayNotice is the captured overlay path, used when scope chrome is unavailable.
+	overlayNotice string
+	tabHits       []tabHit
+	chromeLines   int
 
 	// The geometry and body lines of the most recent render, for mouse hit testing.
 	box        popupBox
@@ -85,17 +96,9 @@ func (a *App) openOptionsAt(section string) {
 	spin := spinner.New()
 	spin.Spinner = spinner.Dot
 	spin.Style = lipgloss.NewStyle().Foreground(p.Accent).Background(p.Bg)
-	panel := &optionsPanel{app: a, spinner: spin, initial: section}
+	a.optionsLoadSeq++
+	panel := &optionsPanel{app: a, spinner: spin, initial: section, loadSeq: a.optionsLoadSeq}
 	a.Options = panel
-	if a.Session != nil {
-		panel.session = a.Session
-		if section == "" {
-			panel.openRoot()
-		} else {
-			panel.dispatch(section)
-		}
-		return
-	}
 	panel.requestSession()
 }
 
@@ -107,21 +110,73 @@ func (p *optionsPanel) Init() tea.Cmd {
 	return p.spinner.Tick
 }
 
+// newOptionsSession builds the editable options session. Tests replace this to skip agent probing.
+var newOptionsSession = menu.NewSession
+
 func (p *optionsPanel) requestSession() {
+	seq := p.loadSeq
 	p.app.pendingWork = func() any {
-		existing, err := config.Load(true)
-		valid := err == nil
-		if err != nil {
-			existing = config.DefaultConfig()
-		}
-		session, sessionErr := menu.NewSession(existing, valid)
-		return sessionResult{session: session, err: sessionErr}
+		result := loadOptionsSession()
+		result.seq = seq
+		return result
 	}
 }
 
+func loadOptionsSession() sessionResult {
+	if _, err := config.Load(false); err != nil {
+		return sessionResult{err: err}
+	}
+	existing, scopeRaw, err := config.LoadScopeRaw(true)
+	if err != nil {
+		return sessionResult{err: err}
+	}
+	overlayPath, overlayRaw, err := config.ReadOverlay("")
+	if err != nil {
+		return sessionResult{err: err}
+	}
+	if overlayRaw != nil {
+		if err := config.ValidateOverlayMerge(scopeRaw, overlayRaw); err != nil {
+			return sessionResult{err: err}
+		}
+	}
+	language := ""
+	if existing.WelcomeComplete {
+		language = overlayLanguage(overlayRaw)
+		if language == "" {
+			language = config.ExplicitConfigLanguage(scopeRaw)
+		}
+	}
+	session, sessionErr := newOptionsSession(existing, true)
+	if sessionErr != nil {
+		return sessionResult{err: sessionErr}
+	}
+	if existing.WelcomeComplete && !session.EditingOverlay() {
+		if stored := config.ExplicitConfigLanguage(scopeRaw); stored != "" {
+			session.Config.Language = stored
+		} else {
+			session.Config.Language = config.ResolveScopeLanguage()
+		}
+	}
+	return sessionResult{session: session, overlayPath: overlayPath, language: language}
+}
+
+func overlayLanguage(overlay map[string]any) string {
+	if overlay == nil {
+		return ""
+	}
+	lang, _ := overlay["language"].(string)
+	if containsString(config.Languages, lang) {
+		return lang
+	}
+	return ""
+}
+
 type sessionResult struct {
-	session *menu.Session
-	err     error
+	seq         uint64
+	session     *menu.Session
+	overlayPath string
+	language    string
+	err         error
 }
 
 type doctorResult struct {
@@ -133,18 +188,51 @@ type doctorResult struct {
 
 // applyWork consumes the result of a background task; the Bubble Tea shell calls it on a workMsg.
 func (a *App) applyWork(payload any) tea.Cmd {
+	if result, ok := payload.(startPreviewResult); ok {
+		a.applyStartPreview(result)
+		return nil
+	}
+	if result, ok := payload.(startResult); ok {
+		a.applyStartResult(result)
+		return nil
+	}
+	if result, ok := payload.(focusResult); ok {
+		a.focusRunning = false
+		a.showFocusNotice(result.message)
+		return nil
+	}
 	panel := a.Options
 	if panel == nil {
 		return nil
 	}
 	switch result := payload.(type) {
 	case sessionResult:
+		if result.seq != panel.loadSeq {
+			return nil
+		}
 		if result.err != nil {
 			panel.loadErr = result.err.Error()
+			a.Session = nil
+			panel.session = nil
+			panel.overlayNotice = ""
 			return nil
 		}
 		a.Session = result.session
 		panel.session = result.session
+		panel.loadedTUI = result.session.Config.TUI
+		panel.appliedTUI = nil
+		if result.language != "" {
+			config.BindConfigLanguage(&config.Config{Language: result.language})
+		} else {
+			config.BindConfigLanguage(nil)
+		}
+		a.Context = tuiPageContext()
+		panel.session.RefreshCopy()
+		if result.overlayPath != "" {
+			panel.overlayNotice = t("tui.overlay_file", result.overlayPath)
+		} else {
+			panel.overlayNotice = ""
+		}
 		if panel.initial != "" {
 			section := panel.initial
 			panel.initial = ""
@@ -249,6 +337,10 @@ func (p *optionsPanel) Update(msg tea.Msg) tea.Cmd {
 		case "q", "Q", "o", "O":
 			// Consistent with the rest of the board: q closes, and pressing o again closes too.
 			return p.requestClose()
+		case "[":
+			return p.cycleTab(-1)
+		case "]":
+			return p.cycleTab(1)
 		}
 	}
 	if p.form == nil {
@@ -301,7 +393,11 @@ func (p *optionsPanel) rebuildSection() tea.Cmd {
 	if section == "" {
 		return nil
 	}
-	cmd := p.openSection(section)
+	var inputs map[string]modelInput
+	if p.bind != nil {
+		inputs = p.bind.modelInputs
+	}
+	cmd := p.openSectionWithInputs(section, inputs)
 	// openSection rebuilt bind, so only now is it known which position that selector holds in the new form.
 	index := 0
 	if p.bind != nil {
@@ -430,6 +526,13 @@ func (p *optionsPanel) savesOnSubmit() bool {
 
 // persistNow writes the current session to the config file, UI preferences included.
 func (p *optionsPanel) persistNow() error {
+	if p.session != nil && p.session.EditingOverlay() {
+		if _, err := p.session.Save(); err != nil {
+			return err
+		}
+		p.dirty = p.session.HasUnsaved()
+		return nil
+	}
 	p.persistUI()
 	if p.session == nil {
 		return nil
@@ -438,7 +541,7 @@ func (p *optionsPanel) persistNow() error {
 	if _, err := p.session.Save(); err != nil {
 		return err
 	}
-	p.dirty = false
+	p.dirty = p.session.HasUnsaved()
 	return nil
 }
 
@@ -465,6 +568,9 @@ func (p *optionsPanel) dispatch(section string) tea.Cmd {
 	case sectionClose:
 		p.close()
 		return nil
+	case sectionFlow:
+		p.openFlow()
+		return nil
 	case sectionDoctor:
 		p.status = t("tui.running_environment_check")
 		p.app.pendingWork = func() any {
@@ -490,12 +596,12 @@ func (p *optionsPanel) save() {
 		p.showReport(t("tui.save_failed"), finishLines, err.Error())
 		return
 	}
-	path, err := p.session.Save()
+	path, err := p.session.SaveAllDirty()
 	if err != nil {
 		p.showReport(t("tui.save_failed"), finishLines, err.Error())
 		return
 	}
-	p.dirty = false
+	p.dirty = p.session.HasUnsaved()
 	p.app.Context = tuiPageContext()
 	p.showReport(
 		t("tui.configuration_saved"),
@@ -506,14 +612,11 @@ func (p *optionsPanel) save() {
 }
 
 func (p *optionsPanel) persistUI() {
-	prefs := uiPrefs{
-		Columns:        p.app.Columns,
-		MinColumnWidth: p.app.MinColumnWidth,
-		Theme:          p.app.Theme,
-		Refresh:        p.app.RefreshSecs,
-		Single:         p.app.Model.Single,
+	if p.session == nil || p.session.EditingOverlay() {
+		return
 	}
-	written, err := savePrefs(prefs)
+	// Write the session's scope TUI, not the merged App display values.
+	written, err := savePrefs(prefsFromConfig(p.session.Config.TUI))
 	// When the write fails, only the edited value in the session is updated and the baseline is not advanced.
 	p.session.SyncTUI(written, err == nil)
 	if err != nil {

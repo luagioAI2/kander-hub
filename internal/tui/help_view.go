@@ -30,6 +30,8 @@ func boardHelpGroups() []helpGroup {
 				{"Enter", t("tui.task_detail")},
 				{"/", t("tui.search_2")},
 				{"y", t("tui.copy_task_id")},
+				{"g", t("tui.focus_agent_window")},
+				{"s", t("tui.start_task")},
 				{"- =", t("tui.columns_on_screen")},
 				{"a", t("tui.archived_columns")},
 				{"t", t("tui.cycle_theme")},
@@ -73,51 +75,59 @@ func (a *App) renderHelp() (popupBox, string) {
 	left := renderHelpGroup(p, groups[0])
 	right := renderHelpGroup(p, groups[1])
 	if len(groups) > 2 {
-		right = lipgloss.JoinVertical(lipgloss.Left, right, "", renderHelpGroup(p, groups[2]))
+		right = joinBlocksVertical(p, right, renderHelpGroup(p, groups[2]))
 	}
-	body := lipgloss.JoinHorizontal(lipgloss.Top, left, p.fillColumn(3, blockHeight(left)), right)
+	height := blockHeight(left)
+	if got := blockHeight(right); got > height {
+		height = got
+	}
+	// Both sides are padded to their own rectangle first: lipgloss would otherwise pad the shorter
+	// lines and the missing rows with bare spaces, which leaves the terminal background showing through.
+	left = padBlock(left, blockWidth(left), height, p)
+	right = padBlock(right, blockWidth(right), height, p)
+	body := lipgloss.JoinHorizontal(lipgloss.Top, left, p.fillColumn(3, height), right)
 
 	available := w - 8
 	if available > 108 {
 		available = 108
 	}
 	if blockWidth(body) > available-4 {
-		blocks := make([]string, 0, len(groups)*2)
-		for i, group := range groups {
-			if i > 0 {
-				blocks = append(blocks, "")
-			}
+		blocks := make([]string, 0, len(groups))
+		for _, group := range groups {
 			blocks = append(blocks, renderHelpGroup(p, group))
 		}
-		body = lipgloss.JoinVertical(lipgloss.Left, blocks...)
+		body = joinBlocksVertical(p, blocks...)
 	}
 
-	lines := strings.Split(body, "\n")
+	frame := popup{Title: t("tui.key_bindings"), Hint: t("tui.press_any_key_to_close"), MaxWidth: available}
 	inner := blockWidth(body)
-	hint := styleFor("popup-dim", p).Render(t("tui.press_any_key_to_close"))
-	if width := ansi.StringWidth(hint); width > inner {
+	if width := displayWidth(frame.Hint); width > inner {
 		inner = width
 	}
-	title := t("tui.key_bindings")
-	if width := displayWidth(title); width > inner {
+	if width := displayWidth(frame.Title); width > inner {
 		inner = width
 	}
+	box, _, out := frame.render(p, w, h, inner, body)
+	return box, out
+}
 
-	// 2 lines for the top and bottom borders, and 1 line each for the title, the separator, the blank line and the hint.
-	box := centerPopupMax(w, h, inner+4, len(lines)+6, available)
-	inner = box.Width - 4
-	bodyHeight := box.Height - 6
-	if bodyHeight < 1 {
-		bodyHeight = 1
+// joinBlocksVertical stacks the blocks with one blank line between them, every line padded to the
+// widest one so the filler carries the theme background instead of lipgloss' bare spaces.
+func joinBlocksVertical(p palette, blocks ...string) string {
+	width := 0
+	for _, block := range blocks {
+		if got := blockWidth(block); got > width {
+			width = got
+		}
 	}
-	content := strings.Join([]string{
-		styleFor("popup-title", p).Render(padLine(title, inner)),
-		styleFor("popup-edge", p).Render(strings.Repeat("─", inner)),
-		padBlock(body, inner, bodyHeight, p),
-		p.fillLine(inner),
-		padLineFill(hint, inner, p),
-	}, "\n")
-	return box, popupFrame(p, box.Width-2).Render(content)
+	lines := make([]string, 0, len(blocks))
+	for i, block := range blocks {
+		if i > 0 {
+			lines = append(lines, p.fillLine(width))
+		}
+		lines = append(lines, padBlock(block, width, blockHeight(block), p))
+	}
+	return strings.Join(lines, "\n")
 }
 
 func blockWidth(block string) int {
