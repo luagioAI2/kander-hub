@@ -44,6 +44,7 @@ This file is the development contract for the Kander repository itself. The work
 | `internal/tui`      | The terminal kanban for bare `kander` and the Huh options panel       |
 | `internal/menu`     | doctor/config, environment probing and repair, `menu.Session` shared with the options panel |
 | `internal/install`  | First-run wizard, `kander install`, rules extraction and doctor repair |
+| `internal/usage`    | Read-only offline cost reporting for `kander usage`: reads the session logs agents already wrote (DSH session stores, Codex rollouts) and never instruments an agent, calls a provider API, or writes to the board |
 
 - Card creation is unified as `<task-id>/spec.md`; SIZE decides small/large semantics. `Entry.Kind`/`TaskSummary.kind` in public snapshots express the size (the in-package structural scan leaves Kind empty; attachSize fills it in), and physical form uses `Entry.IsDirectory()`. File cards are read-only compatible; init migrates them through the existing transactions inside an explicit maintenance window. Never derive completion gates or models from the directory form.
 - The runtime board data directory is still `kanban/` in the main worktree, and the override is still `KANBAN_DIR`. The config keys `kanban_agent` / `kanban_agents` / `models.kanban` keep the schema from the onevoke era (Kander's former name) and are not renamed.
@@ -73,7 +74,7 @@ The terminal interface uses the Charm libraries as one set, with no hand-rolled 
 
 ## Subcommands
 
-The Runner registry contains: `doctor` `config` `version` `install` `review` `init` `list`/`ls` `show` `update` `new` `move` `pick` `start` `resume` `notify` `dismiss` `check` `guard-write` `dispatch` `coordinator` `subscribe`. `help` is a special branch that prints the top-level help directly and does not enter the Runner registry. Bare `kander` opens the terminal kanban; the global flag is `--lang {cn,en,ja}`.
+The Runner registry contains: `doctor` `config` `version` `install` `review` `init` `list`/`ls` `show` `update` `new` `move` `pick` `start` `resume` `notify` `dismiss` `check` `guard-write` `dispatch` `coordinator` `subscribe` `req` `usage`. `help` is a special branch that prints the top-level help directly and does not enter the Runner registry. Bare `kander` opens the terminal kanban; the global flag is `--lang {cn,en,ja}`.
 
 ## TUI Tests
 
@@ -127,3 +128,4 @@ Go runtime writes of configuration, board migration, the review runtime, Git exc
 - [Original reproduction acceptance mapping](docs/recovery-regressions.md): the 13 original bad behaviors, their owning regressions, and cross-module recovery acceptance.
 - [Custom execution agents](docs/custom-agents.md): executable names, process names, dialect/argv templates, session policies, and review boundaries.
 - [Output parsing](docs/output-parsing.md): declarative `source`/`format`/`select`/`parse`/`join`/`success`, line conditions, and `{name}` / `{{` `}}` placeholders.
+- [Usage reporting](docs/usage-reporting.md): the read-only offline cost report, its sources, the one-record-per-call and cached-input counting rules, absent-versus-zero data, and the scopes of `kander usage`.

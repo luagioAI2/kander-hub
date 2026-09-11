@@ -42,6 +42,7 @@ var commandNames = []string{
 	"coordinator",
 	"subscribe",
 	"req",
+	"usage",
 }
 
 var aliases = map[string]string{
