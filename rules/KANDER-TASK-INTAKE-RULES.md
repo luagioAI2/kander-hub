@@ -1,5 +1,29 @@
 # Task Intake Guidance
 
+## Workload Gate
+
+Classify the request before touching code, state the classification and its reason in the one sentence the plan already carries, and settle the mode once. The classification is the agent's own judgment and is not an extra question put to the user.
+
+In-session execution is eligible only when the request is genuinely small, localized, and gains nothing material from separate context for implementation, verification, or review. When any of the following holds, the work is not eligible for in-session execution, and the plan uses the board:
+
+- It spans multiple files, modules, services, or components.
+- It has two or more independent workstreams.
+- Repository exploration is needed before implementation.
+- Implementation and verification benefit from separate context.
+- Debugging requires tracing across components.
+- External or version-specific facts must be verified.
+- An independent post-change review is materially useful.
+- The user asks for delegation, parallel work, agents, or cards.
+
+Delegation is a set of actions, never a description:
+
+- When the work is delegated, produce it by running the commands. Do not implement it in this session first and create cards afterwards to record what is already done.
+- Describing, simulating, or reasoning about cards, delegation, or agents is never a substitute for running the commands that create them.
+- Once the user has chosen a board option, this session does not implement the work; the confirmed plan's cards are executed per `KANDER-KANBAN-RULES.md` "Claiming, Starting, and Coordination".
+- If `kander new`, `kander pick`, or `kander start` fails, report the actual error and stop. Do not silently finish the work in this session, and do not report cards that were not created: cite only the task IDs the commands actually returned.
+- Never claim that work was delegated, or that cards exist, unless the command that creates them succeeded.
+- An explicit user instruction for the current request takes precedence: when the user asks this session to implement the work, or asks this agent to execute an existing card, follow that instruction.
+
 ## Creation and Confirmation
 
 Provide guidance only for new bug or feature requests that have not yet chosen an execution mode. Tasks continued via `start`, `resume`, or `notify`, and existing cards named by the user, continue on the original card; do not ask again or create another card. When the user has already explicitly chosen the kanban board or direct execution, follow the chosen flow without asking again. Pure Q&A, read-only investigation, minor documentation or configuration tweaks, releases, and merges do not trigger intake guidance.
