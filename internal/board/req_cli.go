@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 )
@@ -247,7 +248,7 @@ func requirementDetailBody(req Requirement) string {
 
 func runReqNew(args []string) int {
 	values := map[string]string{}
-	for _, name := range []string{"--source", "--summary-file"} {
+	for _, name := range []string{"--source", "--summary-file", "--attach"} {
 		var err error
 		args, values[name], _, err = takeValueFlag(args, name)
 		if err != nil {
@@ -276,6 +277,14 @@ func runReqNew(args []string) int {
 	if err != nil {
 		return fail(err)
 	}
+	// Attachments are stored verbatim as paths, the way the requirements TUI
+	// persists them before a decompose; the pool never copies the targets.
+	if attach := values["--attach"]; attach != "" {
+		id := strings.TrimSuffix(filepath.Base(path), ".md")
+		if _, err := SetRequirementAttachments(root, id, splitIDList(attach)); err != nil {
+			return fail(err)
+		}
+	}
 	fmt.Println(path)
 	return 0
 }
@@ -294,6 +303,12 @@ func runReqList(args []string) int {
 		return fail(err)
 	}
 	reqs, err := loadReqsForRun(root)
+	if err != nil {
+		return fail(err)
+	}
+	// Live progress and the derived status need one board scan for the whole
+	// listing; per-requirement scans would read every card once per requirement.
+	reqs, err = RequirementsLiveStatus(root, reqs)
 	if err != nil {
 		return fail(err)
 	}

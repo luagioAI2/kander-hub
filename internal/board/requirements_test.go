@@ -388,3 +388,266 @@ func readReqCard(t *testing.T, root, id string) string {
 	}
 	return string(data)
 }
+
+// reqWithLinkedTask builds a board with one requirement and one linked task,
+// the smallest fixture that exercises live progress derivation. It also points
+// the CLI root resolver at the board so the RunRequirement tests can run.
+func reqWithLinkedTask(t *testing.T) (string, string, string) {
+	t.Helper()
+	root := reqTestRoot(t)
+	t.Setenv(EnvBoardDir, root)
+	if _, err := AddRequirement(root, "login-fix", "Fix login bug", "src", ""); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := NewTask(root, "bug", "login-ui", "login ui", "en", false); err != nil {
+		t.Fatal(err)
+	}
+	return root, todayPrefix() + "-login-fix-req", todayPrefix() + "-login-ui-task"
+}
+
+// plantDoneTask moves a task card into done with a filled contract. The full
+// lifecycle crosses the review evidence gate, which belongs to the review
+// package, so tests plant the finished card directly; live status only reads
+// the state.
+func plantDoneTask(t *testing.T, root, taskID string) {
+	t.Helper()
+	specPath := filepath.Join(root, "backlog", taskID, "spec.md")
+	spec, err := os.ReadFile(specPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	filled := appendRecordSection(string(spec), SectionDiscussion, "SELF_REVIEW: ok\nCARD_REVIEW: ok")
+	filled = strings.ReplaceAll(filled, Placeholder, "done goal")
+	filled = strings.Replace(filled, "- [ ] done goal", "- [x] done goal", 1)
+	if err := os.MkdirAll(filepath.Join(root, "done", taskID), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "done", taskID, "spec.md"), []byte(filled), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "backlog", taskID)); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// The CLI persists --attach paths verbatim on the new card, the same way the
+// requirements TUI stores them; the pool never copies the targets.
+func TestRunReqNewPersistsAttachments(t *testing.T) {
+	root := reqTestRoot(t)
+	t.Setenv(EnvBoardDir, root)
+	code := RunRequirement([]string{"new", "--source", "src", "--attach", " ./shots/before.png , ./docs/spec.md ,, ",
+		"login-fix", "Fix login bug"})
+	if code != 0 {
+		t.Fatalf("req new exit = %d", code)
+	}
+	id := todayPrefix() + "-login-fix-req"
+	raw := ParseRequirementAttachments(readReqCard(t, root, id))
+	if len(raw) != 2 || raw[0] != "./shots/before.png" || raw[1] != "./docs/spec.md" {
+		t.Fatalf("ATTACHMENTS = %v", raw)
+	}
+}
+
+// The CLI status filter matches the derived status, not the stored one, so
+// `--status decomposed` finds requirements with linked open tasks and
+// `--status draft` only finds cards with no linked tasks at all.
+func TestRunReqListStatusFilterUsesDerivedStatus(t *testing.T) {
+	root, id, taskID := reqWithLinkedTask(t)
+	if _, err := ConvertRequirement(root, id, []string{taskID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	code, listed, _ := capture(t, func() int { return RunRequirement([]string{"list", "--status", "decomposed"}) })
+	if code != 0 || !strings.Contains(listed, id) {
+		t.Fatalf("decomposed filter lost the requirement (code=%d): %s", code, listed)
+	}
+	code, listed, _ = capture(t, func() int { return RunRequirement([]string{"list", "--status", "draft"}) })
+	if code != 0 || strings.Contains(listed, id) {
+		t.Fatalf("draft filter must not match a requirement with linked tasks (code=%d): %s", code, listed)
+	}
+	plantDoneTask(t, root, taskID)
+	code, listed, _ = capture(t, func() int { return RunRequirement([]string{"list", "--status", "completed"}) })
+	if code != 0 || !strings.Contains(listed, id) {
+		t.Fatalf("completed filter lost the requirement after its task completed (code=%d): %s", code, listed)
+	}
+	if !strings.Contains(listed, "1/1") {
+		t.Fatalf("listing must report live progress 1/1, got: %s", listed)
+	}
+}
+
+// The listing reports live progress in both the table and the JSON form.
+func TestRunReqListReportsLiveProgress(t *testing.T) {
+	root, id, taskID := reqWithLinkedTask(t)
+	if _, err := ConvertRequirement(root, id, []string{taskID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	code, listed, _ := capture(t, func() int { return RunRequirement([]string{"list"}) })
+	if code != 0 {
+		t.Fatalf("req list exit = %d", code)
+	}
+	if !strings.Contains(listed, "0/1") {
+		t.Fatalf("listing must report live progress 0/1, got: %s", listed)
+	}
+	if !strings.Contains(listed, ReqStatusDecomposed) {
+		t.Fatalf("listing must report the derived status, got: %s", listed)
+	}
+	code, listed, _ = capture(t, func() int { return RunRequirement([]string{"list", "--json"}) })
+	if code != 0 {
+		t.Fatalf("req list --json exit = %d", code)
+	}
+	if !strings.Contains(listed, `"Total":1`) || !strings.Contains(listed, `"Done":0`) {
+		t.Fatalf("JSON listing must carry live done/total, got: %s", listed)
+	}
+	if !strings.Contains(listed, `"Status":"`+ReqStatusDecomposed+`"`) {
+		t.Fatalf("JSON listing must carry the derived status, got: %s", listed)
+	}
+}
+
+// The listing must carry the same live progress and derived status as the
+// single-card view: LoadRequirements alone leaves Total at 0, so a listing
+// that skips live recomputation renders "-" forever and its JSON reports
+// 0/0 done totals. Regression for the req list / req show asymmetry.
+func TestRequirementsLiveStatusMatchesSingleCardView(t *testing.T) {
+	root, id, taskID := reqWithLinkedTask(t)
+	if _, err := ConvertRequirement(root, id, []string{taskID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	reqs, _, err := LoadRequirements(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := RequirementsLiveStatus(root, reqs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(live) != 1 {
+		t.Fatalf("want 1 requirement, got %d", len(live))
+	}
+	single, err := RequirementStatus(reqs[0], root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live[0].Done != single.Done || live[0].Total != single.Total {
+		t.Fatalf("batch progress %d/%d, single-card progress %d/%d", live[0].Done, live[0].Total, single.Done, single.Total)
+	}
+	if live[0].Total != 1 || live[0].Done != 0 {
+		t.Fatalf("live progress = %d/%d, want 0/1", live[0].Done, live[0].Total)
+	}
+	// A requirement with linked open tasks derives "decomposed", which agrees
+	// with the stored status because ConvertRequirement wrote it explicitly.
+	if live[0].Status != ReqStatusDecomposed {
+		t.Fatalf("derived status = %s, want decomposed", live[0].Status)
+	}
+	if stored := MetadataFrom(readReqCard(t, root, id), FieldReqStatus); stored != ReqStatusDecomposed {
+		t.Fatalf("stored status = %s, want the value convert wrote", stored)
+	}
+	// Derivation never writes: the stored status is still what convert wrote,
+	// not a derived value, after the live recomputation above.
+	if live[0].Status != MetadataFrom(readReqCard(t, root, id), FieldReqStatus) {
+		t.Fatalf("derivation must not rewrite the card file")
+	}
+	// The single-card form derives the same status so req show and req list
+	// cannot disagree.
+	if single.Status != ReqStatusDecomposed {
+		t.Fatalf("single-card derived status = %s, want decomposed", single.Status)
+	}
+	// After the linked task completes, both forms derive "completed".
+	plantDoneTask(t, root, taskID)
+	reqs, _, err = LoadRequirements(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err = RequirementsLiveStatus(root, reqs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live[0].Done != 1 || live[0].Total != 1 {
+		t.Fatalf("live progress = %d/%d, want 1/1", live[0].Done, live[0].Total)
+	}
+	if live[0].Status != ReqStatusCompleted {
+		t.Fatalf("derived status = %s, want completed", live[0].Status)
+	}
+}
+
+// Derivation is a display concern: the card file keeps the status the user set
+// explicitly, and `kander req complete` with its --all-done gate stays the only
+// writer of "completed".
+func TestDeriveRequirementStatusKeepsStoredStatusOnFile(t *testing.T) {
+	root, id, taskID := reqWithLinkedTask(t)
+	if _, err := ConvertRequirement(root, id, []string{taskID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	plantDoneTask(t, root, taskID)
+	reqs, _, err := LoadRequirements(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := RequirementsLiveStatus(root, reqs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live[0].Status != ReqStatusCompleted {
+		t.Fatalf("derived status = %s, want completed", live[0].Status)
+	}
+	if stored := MetadataFrom(readReqCard(t, root, id), FieldReqStatus); stored != ReqStatusDecomposed {
+		t.Fatalf("stored status = %s, want the explicit decomposed value", stored)
+	}
+	// An explicit req complete writes the stored status; live derivation for a
+	// card with no linked tasks keeps that stored value.
+	if _, err := SetRequirementStatus(root, id, ReqStatusCompleted); err != nil {
+		t.Fatal(err)
+	}
+	if stored := MetadataFrom(readReqCard(t, root, id), FieldReqStatus); stored != ReqStatusCompleted {
+		t.Fatalf("stored status = %s, want completed", stored)
+	}
+}
+
+// A linked task card that no longer exists is counted as missing, never as
+// done, so derivation cannot turn a broken link into a completed requirement.
+func TestRequirementsLiveStatusCountsMissingCards(t *testing.T) {
+	root, id, taskID := reqWithLinkedTask(t)
+	if _, err := ConvertRequirement(root, id, []string{taskID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "backlog", taskID)); err != nil {
+		t.Fatal(err)
+	}
+	reqs, _, err := LoadRequirements(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := RequirementsLiveStatus(root, reqs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live[0].Total != 1 || live[0].Done != 0 {
+		t.Fatalf("live progress = %d/%d, want 0/1", live[0].Done, live[0].Total)
+	}
+	if len(live[0].Missing) != 1 || live[0].Missing[0] != taskID {
+		t.Fatalf("missing = %v, want [%s]", live[0].Missing, taskID)
+	}
+	if live[0].Status != ReqStatusDecomposed {
+		t.Fatalf("derived status = %s, want decomposed", live[0].Status)
+	}
+}
+
+// A terminal archived card keeps its stored status; derivation never revives it.
+func TestDeriveRequirementStatusKeepsArchivedTerminal(t *testing.T) {
+	root, id, taskID := reqWithLinkedTask(t)
+	if _, err := ConvertRequirement(root, id, []string{taskID}, nil); err != nil {
+		t.Fatal(err)
+	}
+	plantDoneTask(t, root, taskID)
+	if _, err := SetRequirementStatus(root, id, ReqStatusArchived); err != nil {
+		t.Fatal(err)
+	}
+	reqs, _, err := LoadRequirements(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	live, err := RequirementsLiveStatus(root, reqs)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if live[0].Status != ReqStatusArchived {
+		t.Fatalf("derived status = %s, want archived", live[0].Status)
+	}
+}

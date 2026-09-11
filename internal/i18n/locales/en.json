@@ -969,7 +969,7 @@
   "review.codex_review_did_not_complete_with_review_text": "Codex review did not complete with review text",
   "review.grok_review_did_not_complete_with_review_text": "Grok review did not complete with review text",
   "board.messages.req": "usage: kander req <new|list|show|convert|link|unlink|remove|complete|decompose|tui|serve> [args]",
-  "board.messages.req-new": "usage: kander req new --source <source-or-path> [--summary-file <file>] <slug> <title...>",
+  "board.messages.req-new": "usage: kander req new --source <source-or-path> [--summary-file <file>] [--attach <path,path...>] <slug> <title...>",
   "board.messages.req-list": "usage: kander req list [--status <status>] [--json]",
   "board.messages.req-show": "usage: kander req show [--json] <requirement-id>",
   "board.messages.req-convert": "usage: kander req convert <requirement-id> [task...] [--groups <group,group...>]",

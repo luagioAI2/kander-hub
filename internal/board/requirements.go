@@ -51,7 +51,11 @@ const (
 
 	// FieldReqSession mirrors board.FieldSession for requirement cards so the
 	// decompose agent's identity can be persisted next to the requirement and
-	// later resumed by kander req resume.
+	// its window re-focused later. There is deliberately no `kander req
+	// resume`: resume is a task-card command bound to a board entry in
+	// review/working, and a requirement card has no board entry. Re-engaging a
+	// requirement's orchestrator means re-running `kander req decompose`, which
+	// reuses the recorded window when it is still alive.
 	FieldReqSession = "SESSION"
 	// FieldReqLastDecompose records the last decompose run timestamp on a
 	// requirement card. It is updated by the launch pipeline after each
@@ -600,28 +604,66 @@ func requirementProgress(req *Requirement, board Board, texts map[string]string)
 	return nil
 }
 
-// RequirementStatus recomputes the live status of one requirement card from the
-// board: all linked tasks done => completed; any linked tasks and at least one
-// done => the decomposition stays "decomposed" with progress; no linked tasks
-// keeps the stored status (draft). It reports the derived status without
-// rewriting the file.
+// DeriveRequirementStatus returns the status a requirement card should display,
+// derived from the live progress and the stored status. The card file keeps the
+// status the user set explicitly (`kander req complete` with its --all-done
+// gate stays the only writer of "completed"); derivation is read-only so it can
+// never race the linked task cards. All linked tasks done => "completed"; any
+// linked tasks still open => "decomposed"; no linked tasks, or a terminal
+// "archived" card, keeps the stored status.
+func DeriveRequirementStatus(req Requirement) string {
+	if req.Total == 0 || req.Status == ReqStatusArchived {
+		return req.Status
+	}
+	if req.Done == req.Total {
+		return ReqStatusCompleted
+	}
+	return ReqStatusDecomposed
+}
+
+// RequirementStatus recomputes the live progress and the derived status of one
+// requirement card from the board. See RequirementsLiveStatus; this single-card
+// form exists for callers that address one requirement.
 func RequirementStatus(req Requirement, root string) (Requirement, error) {
-	board, err := Scan(root)
+	reqs, err := RequirementsLiveStatus(root, []Requirement{req})
 	if err != nil {
 		return req, err
+	}
+	return reqs[0], nil
+}
+
+// RequirementsLiveStatus recomputes live progress and the derived status for a
+// batch of requirement cards with one board scan and one document read per card.
+// The per-requirement form (RequirementStatus) re-scans the whole board for
+// every card, so listings must use this batched form instead of looping over
+// the single-card one: that would turn an overview into O(requirements x cards)
+// file reads. The stored status on each card is never rewritten; only the
+// returned copies carry the derived value.
+func RequirementsLiveStatus(root string, reqs []Requirement) ([]Requirement, error) {
+	if len(reqs) == 0 {
+		return reqs, nil
+	}
+	board, err := Scan(root)
+	if err != nil {
+		return reqs, err
 	}
 	texts := map[string]string{}
 	for id := range board.Entries {
 		text, err := board.Document(id)
 		if err != nil {
-			return req, err
+			return reqs, err
 		}
 		texts[id] = text
 	}
-	if err = requirementProgress(&req, board, texts); err != nil {
-		return req, err
+	out := make([]Requirement, len(reqs))
+	for i, req := range reqs {
+		if err = requirementProgress(&req, board, texts); err != nil {
+			return reqs, err
+		}
+		req.Status = DeriveRequirementStatus(req)
+		out[i] = req
 	}
-	return req, nil
+	return out, nil
 }
 
 // RequirementProgressLine renders the "done/total" progress token for list output.

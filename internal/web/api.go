@@ -51,13 +51,13 @@ type taskRow struct {
 // taskDetail is the payload shown when the user clicks a task card: the
 // raw document plus the requirement(s) that link back to it.
 type taskDetail struct {
-	ID           string         `json:"id"`
-	Title        string         `json:"title"`
-	State        string         `json:"state"`
-	Type         string         `json:"type"`
-	Group        string         `json:"group"`
-	Document     string         `json:"document"`
-	Requirements []reqBackref   `json:"requirements"`
+	ID           string       `json:"id"`
+	Title        string       `json:"title"`
+	State        string       `json:"state"`
+	Type         string       `json:"type"`
+	Group        string       `json:"group"`
+	Document     string       `json:"document"`
+	Requirements []reqBackref `json:"requirements"`
 }
 
 // reqBackref names one requirement that links to this task.
@@ -69,8 +69,8 @@ type reqBackref struct {
 
 // boardView groups tasks by state for the kanban tab.
 type boardView struct {
-	States     []string            `json:"states"`
-	Tasks      map[string][]taskRow `json:"tasks"`
+	States []string             `json:"states"`
+	Tasks  map[string][]taskRow `json:"tasks"`
 }
 
 // liveRequirement re-derives progress/status for a parsed card.
@@ -85,18 +85,20 @@ func (s *Server) listRequirements(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusInternalServerError, err)
 		return
 	}
-	rows := make([]requirementRow, 0, len(reqs))
-	for _, req := range reqs {
-		live, lerr := liveRequirement(s.Root, req)
-		if lerr != nil {
-			live = req
-		}
+	// One board scan for the whole listing; per-requirement scans would read
+	// every card once per requirement.
+	live, err := board.RequirementsLiveStatus(s.Root, reqs)
+	if err != nil {
+		live = reqs
+	}
+	rows := make([]requirementRow, 0, len(live))
+	for _, req := range live {
 		rows = append(rows, requirementRow{
-			ID:     live.ID,
-			Title:  live.Title,
-			Status: live.Status,
-			Done:   live.Done,
-			Total:  live.Total,
+			ID:     req.ID,
+			Title:  req.Title,
+			Status: req.Status,
+			Done:   req.Done,
+			Total:  req.Total,
 		})
 	}
 	writeJSON(w, http.StatusOK, map[string]any{

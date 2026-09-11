@@ -969,7 +969,7 @@
   "review.codex_review_did_not_complete_with_review_text": "Codex 审核未完成, 缺少 review 文本",
   "review.grok_review_did_not_complete_with_review_text": "Grok 审核未完成, 缺少 review 文本",
   "board.messages.req": "用法: kander req <new|list|show|convert|link|unlink|remove|complete|decompose|tui|serve> [参数]",
-  "board.messages.req-new": "用法: kander req new --source <来源或路径> [--summary-file <文件>] <slug> <标题...>",
+  "board.messages.req-new": "用法: kander req new --source <来源或路径> [--summary-file <文件>] [--attach <路径,路径...>] <slug> <标题...>",
   "board.messages.req-list": "用法: kander req list [--status <状态>] [--json]",
   "board.messages.req-show": "用法: kander req show [--json] <需求ID>",
   "board.messages.req-convert": "用法: kander req convert <需求ID> [任务...] [--groups <任务组,任务组...>]",

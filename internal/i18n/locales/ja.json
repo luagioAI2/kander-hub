@@ -969,7 +969,7 @@
   "review.codex_review_did_not_complete_with_review_text": "Codex レビューがレビュー本文付きで完了しませんでした",
   "review.grok_review_did_not_complete_with_review_text": "Grok レビューがレビュー本文付きで完了しませんでした",
   "board.messages.req": "使い方: kander req <new|list|show|convert|link|unlink|remove|complete|decompose|tui|serve> [引数]",
-  "board.messages.req-new": "使い方: kander req new --source <ソースまたはパス> [--summary-file <ファイル>] <slug> <タイトル...>",
+  "board.messages.req-new": "使い方: kander req new --source <ソースまたはパス> [--summary-file <ファイル>] [--attach <パス,パス...>] <slug> <タイトル...>",
   "board.messages.req-list": "使い方: kander req list [--status <状態>] [--json]",
   "board.messages.req-show": "使い方: kander req show [--json] <要件ID>",
   "board.messages.req-convert": "使い方: kander req convert <要件ID> [タスク...] [--groups <グループ,グループ...>]",

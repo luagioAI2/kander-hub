@@ -1,66 +1,134 @@
-# 需求池（kander req）
+# Requirements pool (kander req)
 
-需求池是看板之外的独立轻量存储，位于 `kanban/requirements/`。需求卡不进入
-`backlog→todo→working→review→done` 生命周期，不会被 `kander start` 启动，
-也与上游任务卡的事务/审核体系完全隔离——同步上游时该目录与代码触点互不冲突。
+The requirements pool is a standalone, minimal store outside the kanban board,
+at `kanban/requirements/`. Requirement cards never enter the
+`backlog→todo→working→review→done` lifecycle, are never started by
+`kander start`, and are fully isolated from the task-card transaction and
+review systems: syncing upstream never conflicts with this directory or with
+code touchpoints.
 
-## 需求卡
+## Requirement card
 
-`requirements/<YYYYMMDD>-<slug>-req.md`，极简结构：
+`requirements/<YYYYMMDD>-<slug>-req.md`, a minimal structure:
 
 ```markdown
-# <标题>
+# <title>
 
-- SOURCE: <来源标识，如 pool://login-doc-42 或文档路径>
+- SOURCE: <source identity, e.g. pool://login-doc-42 or a document path>
 - STATUS: draft
 - CREATED_AT: 2026-09-08 03:40
-- DOCS: <关联文档标识，逗号分隔，可选>
-- TASKS: <关联任务卡 ID，逗号分隔>
-- TASK_GROUPS: <关联任务组 ID，逗号分隔>
+- DOCS: <linked document identities, comma-separated, optional>
+- TASKS: <linked task card IDs, comma-separated>
+- TASK_GROUPS: <linked task group IDs, comma-separated>
+- ATTACHMENTS: <user-supplied attachment paths, comma-separated, stored verbatim>
+- SESSION: <decompose agent identity>
+- WINDOW: <decompose session launcher window>
+- LAST_DECOMPOSE: <last decompose run timestamp>
+- MODE: <collaborative | autonomous, empty defaults to collaborative>
 
 ## SUMMARY
 
-<一句话需求摘要>
+<one-sentence requirement summary>
 
 ## NOTES
 
 N/A
 ```
 
-状态机：
+### Status and derivation
 
-| 状态 | 含义 |
+| Status | Meaning |
 | --- | --- |
-| `draft` | 未拆解（初始状态） |
-| `decomposed` | 已拆解，TASKS/TASK_GROUPS 已记录关联任务 |
-| `completed` | 关联任务全部 done 后标记（手工确认或 `--all-done` 自动校验） |
-| `archived` | 终态，不再参与进度 |
+| `draft` | Not decomposed (initial state) |
+| `decomposed` | Decomposed; TASKS/TASK_GROUPS record the linked work |
+| `completed` | Written by an explicit `kander req complete`, gated by `--all-done` |
+| `archived` | Terminal; excluded from derivation |
 
-进度按关联任务实时计算：`done 数 / 关联总数`（任务组按现有成员展开）。
+What a command **displays** is the *derived* status, recomputed live from the
+linked task cards and never written back to the card file: all linked tasks
+done → `completed`; any linked tasks still open → `decomposed`; no linked
+tasks, or a terminal `archived` card, keeps the stored status. The card file
+only ever changes through explicit commands, so `kander req complete` with its
+`--all-done` gate stays the only writer of `completed` and derivation can
+never race the linked task cards.
 
-## 命令
+Progress is computed live as `done / total` over the linked task cards (task
+groups expand through their current membership). A linked task card that no
+longer exists is counted as missing and never as done, so a broken link cannot
+turn a requirement into a completed one.
+
+`kander req list` and `kander req list --json` carry the same derived status
+and live progress as `kander req show`; the listing recomputes them with one
+board scan for the whole batch. The `--status` filter matches the derived
+status, so `--status decomposed` finds requirements with linked open tasks and
+`--status draft` only finds cards with no linked tasks at all.
+
+## Idempotence by slug
+
+The requirement ID is `<YYYYMMDD>-<slug>-req`: the slug is the stable name the
+caller chooses and the date is only a prefix. Creating a requirement with a
+slug that already exists on the same day is rejected with
+`req_already_exists` instead of producing a duplicate card. Importers that
+pull the same requirement repeatedly should therefore reuse one stable slug
+and treat the rejection as "already imported"; updating a description is done
+with `kander req draft`, not by re-creating the card. There is deliberately no
+separate external-id field: the slug plus the rejection is the idempotence
+contract, and a second identifier would duplicate SOURCE and the slug
+uniqueness without adding anything.
+
+## Commands
 
 ```sh
-kander req new --source <来源或路径> [--summary-file <文件>] <slug> <标题...>
-kander req list [--status <状态>] [--json]
-kander req show [--json] <需求ID>
-kander req convert <需求ID> [任务ID...] [--groups <组,组...>]   # 记录关联并转 decomposed
-kander req link <需求ID> [任务ID...] [--groups <组,组...>]      # 仅追加关联
-kander req unlink <需求ID>                                       # 清空关联
-kander req complete <需求ID> [--all-done]                        # 标记完成
-kander req remove <需求ID>                                       # 删除（completed 卡受保护）
+kander req new --source <source-or-path> [--summary-file <file>] [--attach <path,path...>] <slug> <title...>
+kander req list [--status <status>] [--json]
+kander req show [--json] <requirement-id>
+kander req convert <requirement-id> [task...] [--groups <group,group...>]   # record links and set decomposed
+kander req link <requirement-id> [task...] [--groups <group,group...>]      # append links only
+kander req unlink <requirement-id>                                          # clear links
+kander req complete <requirement-id> [--all-done]                           # mark completed
+kander req remove <requirement-id>                                          # delete (completed cards are protected)
+kander req decompose (--message <text> | --message-file <path>) [--agent <name>] [--launcher <name>] <req-id>
+kander req draft <requirement-id> <task-slug> [--body-file <path>]          # upsert one PROPOSED_TASKS draft
 ```
 
-典型流程：
+`--attach` stores the given paths verbatim on the new card, the same way the
+requirements TUI persists them before a decompose; the pool never copies or
+uploads the targets, and the decompose prompt hands the path list to the agent.
 
-1. 从外部公共需求池拿到需求文档 → `kander req new --source pool://login-doc-42 login-fix "修复登录 XX bug"`。
-2. 手工拆解出任务卡（`kander new`，可配合 `--large`/任务组）→ `kander req convert <需求ID> <任务ID...>`。
-3. 任务推进；`kander req list` 随时看进度（如 `2/5`）。
-4. 关联任务全部 done → `kander req complete <需求ID> --all-done`（校验失败会提示；去掉 `--all-done` 可强制）。
-5. 按需回写外部公共需求池（当前为手动/脚本行为，kander 不直接写外部池）。
+### Decompose modes
 
-## 实现边界
+`kander req decompose` launches the requirement's orchestrator agent; the
+card's `MODE` field decides its behavior:
 
-- 存储仅依赖 `internal/fs`（防 reparse point、原子写、独占锁 `.kander/locks/requirements.lock`）。
-- `link/convert` 校验任务 ID 存在；`unlink` 清空 TASKS/TASK_GROUPS。
-- i18n 三语目录各新增 35 个 `board.req*` / `board.messages.req*` key，数量保持一致。
+| MODE | Behavior |
+| --- | --- |
+| `collaborative` (default) | Discusses with the user and confirms each proposed task card before `kander new` |
+| `autonomous` | Proposes and drives `kander new` + `req convert` directly |
+
+There is deliberately no `kander req resume`: resume is a task-card command
+bound to a board entry in `review/` or `working/`, and a requirement card has
+no board entry. Re-engaging a requirement's orchestrator means re-running
+`kander req decompose`, which reuses the recorded window when it is still
+alive.
+
+## Typical flow
+
+1. Take a requirement from an external pool → `kander req new --source pool://login-doc-42 login-fix "Fix login bug"`.
+2. Decompose into task cards (`kander new`, with `--large`/task groups as
+   needed) → `kander req convert <req-id> <task-id...>`.
+3. Work progresses; `kander req list` shows live progress at any time (e.g. `2/5`).
+4. All linked tasks done → `kander req complete <req-id> --all-done` (a failed
+   check reports the gate; dropping `--all-done` forces it).
+5. Write back to the external pool as needed (manual/scripted today; kander
+   never writes to an external pool itself).
+
+## Implementation boundaries
+
+- Storage depends only on `internal/fs` (reparse-point rejection, atomic
+  writes, exclusive lock `.kander/locks/requirements.lock`).
+- `link`/`convert` verify that task IDs exist; `unlink` clears
+  TASKS/TASK_GROUPS.
+- Live status derivation is read-only and batched: `board.RequirementsLiveStatus`
+  scans the board once per listing, while `board.RequirementStatus` addresses a
+  single card.
+- The Web API reuses the same batched derivation for its requirements listing.

@@ -128,4 +128,5 @@ Go runtime writes of configuration, board migration, the review runtime, Git exc
 - [Original reproduction acceptance mapping](docs/recovery-regressions.md): the 13 original bad behaviors, their owning regressions, and cross-module recovery acceptance.
 - [Custom execution agents](docs/custom-agents.md): executable names, process names, dialect/argv templates, session policies, and review boundaries.
 - [Output parsing](docs/output-parsing.md): declarative `source`/`format`/`select`/`parse`/`join`/`success`, line conditions, and `{name}` / `{{` `}}` placeholders.
+- [Requirements pool](docs/requirements-pool.md): the `kanban/requirements/` store, live derived progress and status versus the stored card file, idempotence by slug, attachments as verbatim paths, decompose modes, and the absent `kander req resume`.
 - [Usage reporting](docs/usage-reporting.md): the read-only offline cost report, its sources, the one-record-per-call and cached-input counting rules, absent-versus-zero data, and the scopes of `kander usage`.
