@@ -75,9 +75,15 @@ func SectionBody(text, heading string) (string, bool) {
 // is removed entirely; otherwise the section header is followed by the body
 // (which may itself be empty, leaving a placeholder section). Section order
 // follows the existing layout: a newly inserted section lands at the end.
+// The file's newline style is preserved, matching addSize and the review record
+// writers.
 func SetSection(text, heading, body string) (string, error) {
 	re := regexp.MustCompile(`(?m)^## ` + TokenPattern(heading) + `\s*$`)
 	loc := re.FindStringIndex(text)
+	newline := "\n"
+	if strings.Contains(text, "\r\n") {
+		newline = "\r\n"
+	}
 	if body == "" {
 		if loc == nil {
 			return text, nil
@@ -89,21 +95,23 @@ func SetSection(text, heading, body string) (string, error) {
 			// Drop the trailing newline that used to terminate the section so
 			// the file does not gain a stray blank line at EOF.
 			end = loc[1]
-			for end > 0 && text[end-1] == '\n' {
+			for end > 0 && (text[end-1] == '\n' || text[end-1] == '\r') {
 				end--
 			}
 		}
 		return text[:loc[0]] + text[end:], nil
 	}
 	if loc == nil {
-		return strings.TrimRight(text, "\n") + "\n\n## " + heading + "\n\n" + body + "\n", nil
+		return strings.TrimRight(text, "\r\n") + newline + newline + "## " + heading + newline + newline + body + newline, nil
 	}
 	end := len(text)
 	if next := headingRe.FindStringIndex(text[loc[1]:]); next != nil {
 		end = loc[1] + next[0]
 	}
-	head := strings.TrimRight(text[:end], "\n") + "\n\n"
-	return head + "## " + heading + "\n\n" + body + "\n\n" + text[end:], nil
+	// Replace in place: keep everything before the old heading, drop the old
+	// section, and reattach whatever followed it.
+	head := strings.TrimRight(text[:loc[0]], "\r\n") + newline + newline
+	return head + "## " + heading + newline + newline + body + newline + newline + text[end:], nil
 }
 
 func resultFrom(text string) string {

@@ -30,7 +30,7 @@ func RunDecompose(args []string) int {
 	}
 	var message, messageFile string
 	var messageSet bool
-	var autonomous bool
+	var autonomous, discuss bool
 	var positional []string
 	for i := 0; i < len(rest); i++ {
 		arg := rest[i]
@@ -55,12 +55,21 @@ func RunDecompose(args []string) int {
 			autonomous = true
 		case strings.HasPrefix(arg, "--autonomous="):
 			autonomous = strings.TrimPrefix(arg, "--autonomous=") == "true"
+		case arg == "--discuss":
+			discuss = true
+		case strings.HasPrefix(arg, "--discuss="):
+			discuss = strings.TrimPrefix(arg, "--discuss=") == "true"
 		default:
 			if strings.HasPrefix(arg, "-") {
 				return usageDecomposeFail("board.unknown_option", arg)
 			}
 			positional = append(positional, arg)
 		}
+	}
+	// The two flags set the same MODE field to opposite ends of the scale, so
+	// honouring both would silently drop one of them.
+	if autonomous && discuss {
+		return usageDecomposeFail("launch.decompose_autonomous_and_discuss_conflict")
 	}
 	if len(positional) != 1 {
 		return usageDecomposeFail("launch.task_id_is_required")
@@ -85,6 +94,7 @@ func RunDecompose(args []string) int {
 		MessageSet:  messageSet,
 		MessageFile: messageFile,
 		Autonomous:  autonomous,
+		Discuss:     discuss,
 	}
 	if err := commandDecompose(decompArgs); err != nil {
 		return fail(err)
@@ -96,6 +106,7 @@ func usageDecompose(w io.Writer) {
 	fmt.Fprintln(w, t(
 		"launch.usage_kander_req_decompose_agent_launcher_message_text_message",
 	))
+	fmt.Fprintln(w, t("launch.usage_decompose_discuss_hint"))
 	fmt.Fprintln(w, t("launch.usage_decompose_autonomous_hint"))
 }
 

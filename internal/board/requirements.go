@@ -42,11 +42,11 @@ const (
 	// FieldReqWindow mirrors board.FieldWindow so the requirement card can
 	// record the launcher window of its decompose session for quick switch.
 	FieldReqWindow = "WINDOW"
-	// FieldReqMode records whether the decompose session runs as a
-	// collaborative orchestrator (asks the user to confirm each proposed task
-	// card before kander new) or as an autonomous orchestrator (proposes,
-	// then drives kander new directly). Valid values: "collaborative",
-	// "autonomous". Empty defaults to "collaborative".
+	// FieldReqMode records how the decompose session runs. "discuss" only
+	// discusses and drafts (it never creates a card), "collaborative" confirms
+	// each proposed task card with the user before kander new, and "autonomous"
+	// proposes then drives kander new directly. Empty defaults to
+	// "collaborative".
 	FieldReqMode = "MODE"
 
 	// FieldReqSession mirrors board.FieldSession for requirement cards so the
@@ -71,6 +71,10 @@ const (
 )
 
 const (
+	// ReqModeDiscuss makes the orchestrator discuss the requirement and write
+	// ## PROPOSED_TASKS drafts only. It must not run kander new, which is what
+	// keeps "we are still deciding" distinct from "cards exist".
+	ReqModeDiscuss = "discuss"
 	// ReqModeCollaborative makes the orchestrator present each draft to the
 	// user and only kander new after an explicit confirmation.
 	ReqModeCollaborative = "collaborative"
@@ -78,6 +82,21 @@ const (
 	// drive kander new + req convert directly from the drafts.
 	ReqModeAutonomous = "autonomous"
 )
+
+// RequirementModes lists every valid MODE value, in escalation order.
+func RequirementModes() []string {
+	return []string{ReqModeDiscuss, ReqModeCollaborative, ReqModeAutonomous}
+}
+
+// validRequirementMode reports whether mode is one of RequirementModes.
+func validRequirementMode(mode string) bool {
+	for _, candidate := range RequirementModes() {
+		if candidate == mode {
+			return true
+		}
+	}
+	return false
+}
 
 var (
 	reqIDRe = regexp.MustCompile(`^\d{8}-[a-z0-9]+(?:-[a-z0-9]+)*-req$`)
@@ -818,14 +837,14 @@ func attachPaths(paths []string) []string {
 	return out
 }
 
-// SetRequirementMode writes the orchestrator collaboration mode. Valid values
-// are "collaborative" and "autonomous"; an empty value clears the field.
+// SetRequirementMode writes the orchestrator mode. Valid values are the entries
+// of RequirementModes; an empty value clears the field.
 func SetRequirementMode(root, id, mode string) (string, error) {
 	id, err := validateRequirementID(id)
 	if err != nil {
 		return "", err
 	}
-	if mode != "" && mode != ReqModeCollaborative && mode != ReqModeAutonomous {
+	if mode != "" && !validRequirementMode(mode) {
 		return "", kanbanError("board.transaction_invalid", FieldReqMode)
 	}
 	release, err := requirementLock(root)
@@ -855,9 +874,8 @@ func ParseRequirementAttachments(text string) []string {
 	return splitIDList(MetadataFrom(text, FieldReqAttach))
 }
 
-// ParseRequirementMode returns the orchestrator collaboration mode recorded
-// on the card. Empty string means "not set"; callers should treat that as
-// collaborative.
+// ParseRequirementMode returns the orchestrator mode recorded on the card.
+// Empty string means "not set"; callers should treat that as collaborative.
 func ParseRequirementMode(text string) string {
 	return MetadataFrom(text, FieldReqMode)
 }
@@ -866,6 +884,109 @@ func ParseRequirementMode(text string) string {
 // address of the last decompose window, or "" when never launched.
 func ParseRequirementWindow(text string) string {
 	return MetadataFrom(text, FieldReqWindow)
+}
+
+// selectDraftSlugs picks the drafts to materialize: every draft in stable slug
+// order, or the caller's --only list (validated, deduplicated, order preserved).
+func selectDraftSlugs(id string, drafts map[string]string, only []string) ([]string, error) {
+	if len(only) == 0 {
+		slugs := make([]string, 0, len(drafts))
+		for slug := range drafts {
+			slugs = append(slugs, slug)
+		}
+		sort.Strings(slugs)
+		return slugs, nil
+	}
+	var slugs []string
+	for _, slug := range only {
+		slug = strings.ToLower(strings.TrimSpace(slug))
+		if slug == "" {
+			continue
+		}
+		if _, ok := drafts[slug]; !ok {
+			return nil, kanbanError("board.req_unknown_draft", slug)
+		}
+		slugs = uniqueKeepOrder(append(slugs, slug))
+	}
+	if len(slugs) == 0 {
+		return nil, kanbanError("board.req_no_proposed_tasks", id)
+	}
+	return slugs, nil
+}
+
+// ConvertRequirementDrafts materializes the requirement's ## PROPOSED_TASKS
+// drafts into real task cards and links them to the requirement.
+//
+// The converted drafts are removed from the section, so running the command
+// twice is a no-op instead of a duplicate-card error, and a partially adopted
+// set (--only) leaves the unmaterialized drafts in place for a later run.
+//
+// This function must not hold the requirements lock while it works: NewTask,
+// LinkRequirementTargets and SetProposedTasks each acquire their own locks, and
+// taking the pool lock here would deadlock on re-entry.
+func ConvertRequirementDrafts(root, id, kind, language string, large bool, only []string) ([]string, error) {
+	id, err := validateRequirementID(id)
+	if err != nil {
+		return nil, err
+	}
+	if _, ok := typeNames[kind]; !ok {
+		return nil, kanbanError("board.unknown_task_type", kind)
+	}
+	text, err := ReadRequirementDocument(root, id)
+	if err != nil {
+		return nil, err
+	}
+	req := parseRequirement(id, requirementPath(root, id), text)
+	if len(req.Proposed) == 0 {
+		return nil, kanbanError("board.req_no_proposed_tasks", id)
+	}
+	slugs, err := selectDraftSlugs(id, req.Proposed, only)
+	if err != nil {
+		return nil, err
+	}
+	created := make([]string, 0, len(slugs))
+	consumed := make([]string, 0, len(slugs))
+	var failure error
+	for _, slug := range slugs {
+		title := draftTitle(req.Proposed[slug])
+		if title == "" {
+			// A draft without its own heading still produces a card; the slug is
+			// the only name the orchestrator guaranteed.
+			title = strings.ReplaceAll(slug, "-", " ")
+		}
+		target, err := NewTaskFromDraft(root, kind, slug, title, language, large, req.Proposed[slug])
+		if err != nil {
+			failure = err
+			break
+		}
+		created = append(created, filepath.Base(target))
+		consumed = append(consumed, slug)
+	}
+	// Record and consume whatever was created before a failure. Leaving the
+	// drafts in place would make the retry fail on the same slug forever, and
+	// dropping the cards would lose work that already exists on the board.
+	if len(created) > 0 {
+		if _, err := LinkRequirementTargets(root, id, created, nil, false); err != nil {
+			return created, err
+		}
+		done := make(map[string]struct{}, len(consumed))
+		for _, slug := range consumed {
+			done[slug] = struct{}{}
+		}
+		remaining := make(map[string]string, len(req.Proposed))
+		for slug, body := range req.Proposed {
+			if _, ok := done[slug]; !ok {
+				remaining[slug] = body
+			}
+		}
+		if _, err := SetProposedTasks(root, id, remaining); err != nil {
+			return created, err
+		}
+	}
+	if failure != nil {
+		return created, failure
+	}
+	return created, nil
 }
 
 // ConvertRequirement decomposes a requirement: the user supplies the task IDs

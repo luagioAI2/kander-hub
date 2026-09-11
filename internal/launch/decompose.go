@@ -26,14 +26,18 @@ type DecomposeArgs struct {
 	// launcher window still appears; the agent simply does not wait for
 	// user confirmation before writing cards.
 	Autonomous bool
+	// Discuss switches the agent prompt to drafts-only: the orchestrator
+	// discusses and writes ## PROPOSED_TASKS drafts but never runs kander new,
+	// so the requirement stays undecided until someone materializes the drafts.
+	Discuss bool
 }
 
 // decomposeAgentPrompt is the body that the Agent receives as its task file.
 // It deliberately reuses startAgentPrompt's rule-loading contract; the
 // differences are the head and the body template. mode carries the
-// requirement's MODE field and switches the orchestrator between
-// collaborative (asks the user to confirm each draft) and autonomous
-// (proposes then drives kander new directly).
+// requirement's MODE field and switches the orchestrator between discuss
+// (drafts only), collaborative (asks the user to confirm each draft) and
+// autonomous (proposes then drives kander new directly).
 func decomposeAgentPrompt(reqID string, paths config.InstallPaths, message, cardText, mode string) (string, error) {
 	if paths.Mode == config.ModeProject && paths.ProjectRoot == "" {
 		return "", launchError("config.project_install_paths_are_missing_the_main_worktree")
@@ -54,6 +58,14 @@ func decomposeAgentPrompt(reqID string, paths config.InstallPaths, message, card
 			head,
 			message,
 			command,
+		) + "\n\n" + body + "\n\n" + rules + "\n", nil
+	}
+	if mode == board.ReqModeDiscuss {
+		return t("launch.prompt.decompose_discuss",
+			head,
+			message,
+			command,
+			reqID,
 		) + "\n\n" + body + "\n\n" + rules + "\n", nil
 	}
 	return t("launch.prompt.decompose",
@@ -77,11 +89,27 @@ func attachmentList(paths []string) string {
 	return strings.Join(paths, "; ")
 }
 
+// resolveDecomposeMode picks the mode for this run. An explicit flag wins over
+// the value recorded on the card, and a card that never recorded a mode runs
+// collaborative (the safe default: the orchestrator asks before creating cards).
+func resolveDecomposeMode(recorded string, args DecomposeArgs) string {
+	switch {
+	case args.Autonomous:
+		return board.ReqModeAutonomous
+	case args.Discuss:
+		return board.ReqModeDiscuss
+	case recorded == "":
+		return board.ReqModeCollaborative
+	}
+	return recorded
+}
+
 // commandDecompose launches an Agent session to decompose a requirement card.
 // The launched session is the requirement's orchestrator: it follows
 // KANDER-TASK-INTAKE-RULES.md and, once a plan is agreed, KANDER-TASK-GROUP-RULES.md.
-// The card's MODE field (collaborative | autonomous) drives whether the
-// orchestrator asks for confirmation between drafts.
+// The card's MODE field (discuss | collaborative | autonomous) drives whether the
+// orchestrator may create cards at all and whether it asks for confirmation
+// between drafts.
 func commandDecompose(args DecomposeArgs) error {
 	root := args.Root
 	reqID := args.ReqID
@@ -96,12 +124,7 @@ func commandDecompose(args DecomposeArgs) error {
 	if err != nil {
 		return err
 	}
-	mode := board.ParseRequirementMode(original)
-	if args.Autonomous {
-		mode = board.ReqModeAutonomous
-	} else if mode == "" {
-		mode = board.ReqModeCollaborative
-	}
+	mode := resolveDecomposeMode(board.ParseRequirementMode(original), args)
 	if _, err := board.SetRequirementMode(root, reqID, mode); err != nil {
 		return err
 	}

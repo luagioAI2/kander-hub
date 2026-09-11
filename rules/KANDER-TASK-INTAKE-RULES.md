@@ -52,3 +52,20 @@ Number these options from `1` and make them the only numbered question in that m
 - Choosing `Confirm the plan and use the kanban board (create the cards, do not start yet)` authorizes the plan and card creation only. Create the cards, complete the self-review and applicable independent card review, and leave them in `backlog/`; do not move them to `todo/` or start them. Starting later requires a further user instruction; that instruction enters the same flow as the first option from `kander pick` onward (after `pick`, `kander move <task-id> working --owner <agent>` replaces `kander start` only when the user explicitly asks this agent to execute the card itself, per `KANDER-KANBAN-RULES.md` "Claiming, Starting, and Coordination"), and it carries the integration authorization of the confirmed plan; do not ask for it again.
 - Choosing `Confirm the plan, skip the board, do it in this session` implements directly per the project rules, without creating a card.
 - Choosing `Adjust the plan` modifies the plan; no card is created or started yet.
+
+## Requirement Decomposition Modes
+
+A requirement card in `kanban/requirements/` is decomposed by an orchestrator session, not by the intake flow above. Its `MODE` field decides how far that session may go, and the mode is part of the confirmed plan:
+
+- `discuss`: discuss the requirement and write `## PROPOSED_TASKS` drafts only. Do not run `kander new`. The drafts are proposals, and the requirement stays undecided until the user confirms them.
+- `collaborative`: discuss and write drafts, then confirm each proposed card with the user before `kander new`.
+- `autonomous`: write the drafts and create the cards without waiting for confirmation.
+
+Confirmed drafts become cards with `kander req convert <req-id> --from-drafts`, which creates the card from the draft and links it to the requirement. A draft supplies contract content only: the card envelope, the card type, and the size come from the command, and the self-review and card-review records are never taken from a draft. Cards created this way need the same post-creation self-review as cards created by `kander new`, and being materialized from an accepted draft is not a reason to skip it.
+
+The following are contract violations in requirement mode, not shortcuts:
+
+- Creating a task card while the mode is `discuss`, including one "just to check" the flow.
+- Reporting drafts as cards. Writing `## PROPOSED_TASKS` or running `kander req draft` creates no card; cite only the task IDs `kander new` or `kander req convert --from-drafts` actually returned.
+- Advancing a requirement to `completed`, or a card past `working`, on the strength of a draft rather than a real card that passed its gates.
+- Materializing drafts the user has not confirmed when the mode is `discuss` or `collaborative`.

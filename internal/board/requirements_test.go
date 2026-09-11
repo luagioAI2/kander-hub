@@ -322,6 +322,21 @@ func TestRequirementModeRoundTrip(t *testing.T) {
 	if ParseRequirementMode(raw) != ReqModeAutonomous {
 		t.Fatalf("ParseRequirementMode = %q", ParseRequirementMode(raw))
 	}
+	// discuss is a first-class mode: it is the only one that must not create a
+	// card, so it has to survive a write/parse round trip like the others.
+	if _, err := SetRequirementMode(root, id, ReqModeDiscuss); err != nil {
+		t.Fatal(err)
+	}
+	reqs, _, _ = LoadRequirements(root)
+	if reqs[0].Mode != ReqModeDiscuss {
+		t.Fatalf("mode = %q, want %q", reqs[0].Mode, ReqModeDiscuss)
+	}
+	if got := ParseRequirementMode(readReqCard(t, root, id)); got != ReqModeDiscuss {
+		t.Fatalf("ParseRequirementMode = %q", got)
+	}
+	if !validRequirementMode(ReqModeDiscuss) || validRequirementMode("wild") {
+		t.Fatalf("validRequirementMode disagrees with RequirementModes %v", RequirementModes())
+	}
 	// Invalid mode is rejected.
 	if _, err := SetRequirementMode(root, id, "wild"); err == nil {
 		t.Fatal("expected invalid mode rejection")

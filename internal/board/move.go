@@ -9,8 +9,9 @@ import (
 )
 
 // newTask creates a directory card with an independent task size in backlog. language is written to the
-// card's LANGUAGE field and must already satisfy config.ValidateAgentLanguage.
-func newTask(tx *Transaction, root, kind, slug, title, language string, large bool) (string, error) {
+// card's LANGUAGE field and must already satisfy config.ValidateAgentLanguage. A non-empty draft folds an
+// orchestrator's contract text into the generated skeleton; see mergeDraftContract.
+func newTask(tx *Transaction, root, kind, slug, title, language string, large bool, draft string) (string, error) {
 	if !slugRe.MatchString(slug) {
 		return "", kanbanError("board.slug_may_contain_only_lowercase_ascii_letters_digits_and")
 	}
@@ -33,6 +34,12 @@ func newTask(tx *Transaction, root, kind, slug, title, language string, large bo
 		return "", kanbanError("board.task_already_exists", taskID)
 	}
 	contract := renderContract(title, kind, language)
+	if draft != "" {
+		contract, err = mergeDraftContract(contract, draft, title)
+		if err != nil {
+			return "", err
+		}
+	}
 
 	taskKind := "small"
 	target := filepath.Join(root, "backlog", taskID)
@@ -55,10 +62,17 @@ func newTask(tx *Transaction, root, kind, slug, title, language string, large bo
 
 // NewTask creates an entry under the board and task locks, including identity allocation.
 func NewTask(root, kind, slug, title, language string, large bool) (target string, err error) {
+	return NewTaskFromDraft(root, kind, slug, title, language, large, "")
+}
+
+// NewTaskFromDraft creates an entry from an orchestrator draft. The card
+// envelope is still generated, so a draft can supply contract content without
+// being able to produce a structurally invalid card.
+func NewTaskFromDraft(root, kind, slug, title, language string, large bool, draft string) (target string, err error) {
 	id := todayPrefix() + "-" + slug + "-task"
 	err = WithTransaction(root, LockScope{Tasks: []string{id}, ExclusiveBoard: true}, func(tx *Transaction) error {
 		var e error
-		target, e = newTask(tx, root, kind, slug, title, language, large)
+		target, e = newTask(tx, root, kind, slug, title, language, large, draft)
 		return e
 	})
 	return target, err

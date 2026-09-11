@@ -11,6 +11,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+
+	"github.com/dualface/kander/internal/config"
 )
 
 func reqUsage(w io.Writer, action string) {
@@ -385,12 +387,27 @@ func runReqShow(args []string) int {
 	return 0
 }
 
+// defaultDraftCardType is the card TYPE used by `convert --from-drafts` when
+// the caller does not pass --type. Drafts carry contract content, not a type,
+// so the default is explicit here rather than inferred from SOURCE text.
+const defaultDraftCardType = "feature"
+
 func runReqConvert(args []string) int {
 	var tasks, groups []string
 	args, groupsRaw, _, err := takeValueFlag(args, "--groups")
 	if err != nil {
 		return reqUsageFail("convert", "board.option_requires_a_value", "--groups")
 	}
+	args, onlyRaw, _, err := takeValueFlag(args, "--only")
+	if err != nil {
+		return reqUsageFail("convert", "board.option_requires_a_value", "--only")
+	}
+	args, kind, _, err := takeValueFlag(args, "--type")
+	if err != nil {
+		return reqUsageFail("convert", "board.option_requires_a_value", "--type")
+	}
+	args, fromDrafts := takeFlag(args, "--from-drafts")
+	args, large := takeFlag(args, "--large")
 	for _, arg := range args {
 		if strings.HasPrefix(arg, "-") {
 			return reqUsageFail("convert", "board.unknown_option", arg)
@@ -400,17 +417,53 @@ func runReqConvert(args []string) int {
 		return reqUsageFail("convert", "board.req_requirement_id_required")
 	}
 	id := args[0]
-	tasks = append(tasks, args[1:]...)
-	groups = append(groups, splitCSV(groupsRaw)...)
+	if !fromDrafts {
+		// The draft-only options are rejected rather than ignored: silently
+		// dropping --only would create every draft when the user asked for some.
+		if onlyRaw != "" || kind != "" || large {
+			return reqUsageFail("convert", "board.req_draft_options_require_from_drafts")
+		}
+		tasks = append(tasks, args[1:]...)
+		groups = append(groups, splitCSV(groupsRaw)...)
+		root, err := requireRoot()
+		if err != nil {
+			return fail(err)
+		}
+		path, err := ConvertRequirement(root, id, tasks, groups)
+		if err != nil {
+			return fail(err)
+		}
+		fmt.Println(t("board.req_converted", id, path))
+		return 0
+	}
+	// Materializing drafts and linking explicit task IDs are different
+	// operations; accepting both would misreport which one ran.
+	if len(args) > 1 || groupsRaw != "" {
+		return reqUsageFail("convert", "board.req_from_drafts_rejects_explicit_targets")
+	}
+	if kind == "" {
+		kind = defaultDraftCardType
+	}
+	cfg, err := config.Load(false)
+	if err != nil {
+		return fail(err)
+	}
+	language, err := config.ValidateAgentLanguage(cfg.AgentLanguage)
+	if err != nil {
+		return fail(err)
+	}
 	root, err := requireRoot()
 	if err != nil {
 		return fail(err)
 	}
-	path, err := ConvertRequirement(root, id, tasks, groups)
+	created, err := ConvertRequirementDrafts(root, id, kind, language, large, splitCSV(onlyRaw))
 	if err != nil {
 		return fail(err)
 	}
-	fmt.Println(t("board.req_converted", id, path))
+	for _, taskID := range created {
+		fmt.Println(t("board.req_draft_card_created", taskID))
+	}
+	fmt.Println(t("board.req_drafts_converted", id, strconv.Itoa(len(created))))
 	return 0
 }
 
@@ -520,13 +573,13 @@ func runReqDraft(args []string) int {
 		if err != nil {
 			return fail(err)
 		}
-		body = strings.TrimRight(string(data), "\n")
+		body = strings.TrimRight(trimBOM(string(data)), "\n")
 	} else {
 		data, err := io.ReadAll(os.Stdin)
 		if err != nil {
 			return fail(err)
 		}
-		body = strings.TrimRight(string(data), "\n")
+		body = strings.TrimRight(trimBOM(string(data)), "\n")
 	}
 	if strings.TrimSpace(body) == "" {
 		return fail(kanbanError("board.req_draft_body_required"))
