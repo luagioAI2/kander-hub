@@ -914,15 +914,15 @@ func TestFormatConfigLinesAndReviewHelpers(t *testing.T) {
 	}
 	complete := DefaultConfig()
 	complete.WelcomeComplete = true
-	complete.ReviewStages["large"]["CSA"] = "skip"
-	complete.ReviewStages["large"]["PM"] = "required"
-	complete.ReviewStages["small"]["CSA"] = "skip"
-	complete.ReviewStages["small"]["PM"] = "required"
+	complete.ReviewStages["large"]["Security"] = "skip"
+	complete.ReviewStages["large"]["PMQA"] = "required"
+	complete.ReviewStages["small"]["Security"] = "skip"
+	complete.ReviewStages["small"]["PMQA"] = "required"
 	stageLines, err := ReviewStageLines(complete)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Join(stageLines, " ") != "required skip auto auto required skip auto auto" {
+	if strings.Join(stageLines, " ") != "required skip required skip" {
 		t.Fatalf("%v", stageLines)
 	}
 	modelLines, err := ReviewModelLines(complete, "codex")

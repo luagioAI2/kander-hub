@@ -62,6 +62,7 @@ type DispatchReceipt struct {
 
 // Dispatch is the committed protocol state. Transport never supplies Accepted.
 type Dispatch struct {
+	Execution       *DispatchExecution     `json:"execution,omitempty"`
 	WrapUpAuthority *WrapUpAuthority       `json:"wrap_up_authority,omitempty"`
 	Schema          int                    `json:"schema"`
 	Input           DispatchInput          `json:"intent"`
@@ -73,6 +74,7 @@ type Dispatch struct {
 	Accepted        *DispatchReceipt       `json:"accepted,omitempty"`
 	Completed       *DispatchReceipt       `json:"completed,omitempty"`
 	Reason          string                 `json:"reason,omitempty"`
+	Release         *DispatchRelease       `json:"release,omitempty"`
 }
 
 const dispatchRegistry = "00000000-dispatch-group"
@@ -116,7 +118,22 @@ func sameDispatchInput(a, b DispatchInput) bool {
 	if a.ConfirmBy.IsZero() {
 		a.ConfirmBy = b.ConfirmBy
 	}
-	return reflect.DeepEqual(a, b)
+	// Section is a prepare-time stamp; callers may omit it on same-ID retries.
+	return reflect.DeepEqual(dispatchInputForCompare(a), dispatchInputForCompare(b))
+}
+
+func dispatchInputForCompare(in DispatchInput) DispatchInput {
+	if in.Evidence.Fix == nil {
+		return in
+	}
+	fix := *in.Evidence.Fix
+	findings := append([]DispatchFindingReference(nil), fix.Findings...)
+	for i := range findings {
+		findings[i].Section = ""
+	}
+	fix.Findings = findings
+	in.Evidence.Fix = &fix
+	return in
 }
 func putDispatch(tx *Transaction, d Dispatch) error {
 	b, err := json.Marshal(d)
@@ -169,7 +186,13 @@ func readDispatch(tx *Transaction, task, id string) (Dispatch, error) {
 	if (d.State == DispatchAccepted || d.State == DispatchCompleted) && d.Accepted == nil || d.State == DispatchCompleted && d.Completed == nil {
 		return d, dispatchError(id)
 	}
+	if err := validateDispatchExecution(tx, d); err != nil {
+		return d, err
+	}
 	if err := validateWrapUpAuthority(tx, d); err != nil {
+		return d, err
+	}
+	if err := validateDispatchRelease(tx, d); err != nil {
 		return d, err
 	}
 	return d, nil
@@ -209,6 +232,13 @@ func PrepareDispatch(root string, in DispatchInput) (d Dispatch, err error) {
 }
 
 func (tx *Transaction) prepareDispatch(in DispatchInput, d *Dispatch) error {
+	// Copy fix evidence before stamping section so caller-owned bindings stay intact.
+	if in.Evidence.Fix != nil {
+		fix := *in.Evidence.Fix
+		fix.Findings = append([]DispatchFindingReference(nil), fix.Findings...)
+		fix.Authors = append([]DispatchAuthorReference(nil), fix.Authors...)
+		in.Evidence.Fix = &fix
+	}
 	registered, exists, e := tx.ReadGroup(dispatchRegistry, in.ID+".json")
 	if e != nil {
 		return e
@@ -311,7 +341,7 @@ func BeginDispatchAttempt(root, task, id string, expected uint64, cardRevision .
 		if len(cardRevision) > 0 && s.Revision != cardRevision[0] {
 			return dispatchError(id)
 		}
-		if d.Revision != expected || authFrom(s.Text) != d.Authorization || (d.State != DispatchPrepared && d.State != DispatchUnknown) || !time.Now().Before(d.Input.ConfirmBy) {
+		if d.Revision != expected || authFrom(s.Text) != d.Authorization || (d.State != DispatchPrepared && d.State != DispatchUnknown) || !time.Now().Before(d.AcceptBefore()) {
 			return dispatchError(id)
 		}
 		d.State = DispatchUnknown
@@ -322,35 +352,11 @@ func BeginDispatchAttempt(root, task, id string, expected uint64, cardRevision .
 	return
 }
 
-// EndDispatch records an explicit failure/cancellation decision; it never
-// infers a terminal state merely from a transport timeout.
-func EndDispatch(root, task, id string, expected uint64, state DispatchState, reason string) error {
-	if (state != DispatchFailed && state != DispatchCancelled) || strings.TrimSpace(reason) == "" {
-		return dispatchError(id)
-	}
-	return WithTransaction(root, LockScope{Tasks: []string{task}}, func(tx *Transaction) error {
-		d, e := readDispatch(tx, task, id)
-		if e != nil {
-			return e
-		}
-		s, e := tx.Snapshot(task)
-		if e != nil {
-			return e
-		}
-		if d.Revision != expected || authFrom(s.Text) != d.Authorization || d.State == DispatchCompleted || d.State == DispatchCancelled || d.State == DispatchFailed {
-			return dispatchError(id)
-		}
-		d.State = state
-		d.Reason = reason
-		d.Revision++
-		return putDispatch(tx, d)
-	})
-}
-
 // ReauthorizeDispatch fences the previous executor on an explicitly authorized
 // takeover. Old receipts remain immutable in their epoch-specific paths.
-// The original confirmation deadline is deliberately not extended.
-func ReauthorizeDispatch(root, task, id string, expected uint64) (d Dispatch, err error) {
+// Accepted work needs fresh stopped evidence and gets a new acceptance deadline.
+// Pending work retains its current deadline.
+func ReauthorizeDispatch(root, task, id string, expected uint64, stopped ...WrapUpExitEvidence) (d Dispatch, err error) {
 	err = WithTransaction(root, LockScope{Tasks: []string{task}}, func(tx *Transaction) error {
 		var e error
 		d, e = readDispatch(tx, task, id)
@@ -361,13 +367,25 @@ func ReauthorizeDispatch(root, task, id string, expected uint64) (d Dispatch, er
 		if e != nil {
 			return e
 		}
-		if d.WrapUpAuthority != nil || d.Revision != expected || authFrom(s.Text) != d.Authorization || d.State == DispatchCompleted || d.State == DispatchFailed || d.State == DispatchCancelled || d.Authorization.Epoch == ^uint64(0) || !time.Now().Before(d.Input.ConfirmBy) {
+		if d.WrapUpAuthority != nil || d.Revision != expected || authFrom(s.Text) != d.Authorization || d.State == DispatchCompleted || d.State == DispatchFailed || d.State == DispatchCancelled || d.Authorization.Epoch == ^uint64(0) {
+			return dispatchError(id)
+		}
+		now := time.Now().UTC()
+		execution := DispatchExecution{Epoch: d.Authorization.Epoch + 1, IssuedAt: now, ConfirmBy: d.AcceptBefore()}
+		if d.State == DispatchAccepted {
+			if len(stopped) != 1 || stopped[0].Outcome != "stopped" || !validDispatchExit(s, stopped[0], now) {
+				return dispatchEvidenceError("fresh confirmed exit required")
+			}
+			execution.Exit = &stopped[0]
+			execution.ConfirmBy = now.Add(120 * time.Second)
+		} else if !now.Before(execution.ConfirmBy) {
 			return dispatchError(id)
 		}
 		b, _ := json.Marshal(d)
 		if e = tx.Put(task, dispatchPath(id, "execution-"+strconv.FormatUint(d.Authorization.Epoch, 10)), string(b)+"\n"); e != nil {
 			return e
 		}
+		d.Execution = &execution
 		d.Authorization.Epoch++
 		d.Revision++
 		d.State = DispatchPrepared
@@ -379,6 +397,9 @@ func ReauthorizeDispatch(root, task, id string, expected uint64) (d Dispatch, er
 			return e
 		}
 		if e = tx.Put(task, "spec.md", text); e != nil {
+			return e
+		}
+		if e = tx.Put(task, dispatchPath(id, "execution-"+strconv.FormatUint(d.Authorization.Epoch, 10)), reviewJSON(d)); e != nil {
 			return e
 		}
 		return putDispatch(tx, d)

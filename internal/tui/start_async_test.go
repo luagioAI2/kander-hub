@@ -28,8 +28,9 @@ func TestStartPreviewUpdateDoesNoIOAndRemainsResponsive(test *testing.T) {
 	refreshes := 0
 	app.GetBoard = func() (BoardPayload, error) { refreshes++; return BoardPayload{Tasks: app.Model.Tasks}, nil }
 	p := program{app: app}
-	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
-	if cmd == nil || refreshes != 0 || app.StartConfirmation == nil || app.StartConfirmation.phase != startLoading {
+	app.TaskActions = &taskActions{id: "start-task", items: []taskAction{actionStart}}
+	_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil || refreshes != 0 || app.StartConfirmation == nil || app.StartConfirmation.phase != confirmLoading {
 		test.Fatal("same Update must open loading dialog without reading")
 	}
 	select {
@@ -38,7 +39,7 @@ func TestStartPreviewUpdateDoesNoIOAndRemainsResponsive(test *testing.T) {
 	default:
 	}
 	view := ansi.Strip(app.View())
-	for _, want := range []string{"start-task", "todo", t("tui.start_loading")} {
+	for _, want := range []string{"start-task", "todo", t("dialog.loading")} {
 		if !strings.Contains(view, want) {
 			test.Fatalf("missing %q: %s", want, view)
 		}
@@ -48,12 +49,15 @@ func TestStartPreviewUpdateDoesNoIOAndRemainsResponsive(test *testing.T) {
 	go func() { done <- cmd() }()
 	<-entered
 	p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
-	if app.StartConfirmation.phase != startLoading || !strings.Contains(app.CopyNotice, t("tui.start_loading_keys")) {
+	if app.StartConfirmation.phase != confirmLoading || !strings.Contains(app.CopyNotice, t("dialog.loading_keys")) {
 		test.Fatal("loading confirmation must wait")
 	}
 	app.LastRefresh = app.Now().Add(-time.Hour)
 	p.Update(tickMsg(app.Now()))
-	if refreshes != 1 {
+	if refreshes != 0 {
+		test.Fatal("preview Update must not read the board")
+	}
+	if app.boardInFlightSeq == 0 && !app.boardReadQueued {
 		test.Fatal("preview blocked refresh")
 	}
 	p.Update(tea.WindowSizeMsg{Width: 90, Height: 26})
@@ -68,7 +72,7 @@ func TestStartPreviewDiscardsLateResults(test *testing.T) {
 	for _, mode := range []string{"closed", "same-card-reopened", "other-card", "selection-changed"} {
 		test.Run(mode, func(test *testing.T) {
 			app := startTestApp("todo")
-			app.HandleKey("s")
+			app.confirmSelectedStart()
 			old := app.takePending()
 			if mode != "selection-changed" {
 				app.HandleKey("esc")
@@ -77,7 +81,7 @@ func TestStartPreviewDiscardsLateResults(test *testing.T) {
 				app.Model.SetBoard(BoardPayload{Tasks: []Task{{TaskID: "other-task", State: "todo"}}})
 			}
 			if mode == "same-card-reopened" || mode == "other-card" {
-				app.HandleKey("s")
+				app.confirmSelectedStart()
 			}
 			dialog, notice := app.StartConfirmation, app.CopyNotice
 			app.applyWork(old().(workMsg).payload)
@@ -85,7 +89,7 @@ func TestStartPreviewDiscardsLateResults(test *testing.T) {
 				if app.StartConfirmation != nil {
 					test.Fatal("changed selection retained old dialog")
 				}
-			} else if app.StartConfirmation != dialog || (dialog != nil && dialog.phase != startLoading) {
+			} else if app.StartConfirmation != dialog || (dialog != nil && dialog.phase != confirmLoading) {
 				test.Fatal("stale preview replaced current dialog")
 			}
 			if app.CopyNotice != notice {
@@ -93,7 +97,7 @@ func TestStartPreviewDiscardsLateResults(test *testing.T) {
 			}
 			if dialog != nil && mode != "selection-changed" {
 				finishStartPreview(app)
-				if dialog.phase != startReady {
+				if dialog.phase != confirmReady {
 					test.Fatal("current preview discarded")
 				}
 			}
@@ -105,7 +109,7 @@ func TestStartPreviewChangedStateClosesWithReason(test *testing.T) {
 	app := startTestApp("todo")
 	prepare := app.PrepareStart
 	app.PrepareStart = func(id string) (startRequest, error) { r, e := prepare(id); r.State = "working"; return r, e }
-	app.HandleKey("s")
+	app.confirmSelectedStart()
 	finishStartPreview(app)
 	if app.StartConfirmation != nil || app.CopyNotice != t("tui.start_invalid_state", "working") {
 		test.Fatal("changed state must reject before launch")
@@ -115,7 +119,7 @@ func TestStartPreviewChangedStateClosesWithReason(test *testing.T) {
 func TestStartDialogRetainsAsyncProgressAndResultUntilKey(test *testing.T) {
 	for _, failed := range []bool{false, true} {
 		app := startTestApp("todo")
-		app.HandleKey("s")
+		app.confirmSelectedStart()
 		finishStartPreview(app)
 		calls := 0
 		entered, release := make(chan struct{}), make(chan struct{})
@@ -131,7 +135,7 @@ func TestStartDialogRetainsAsyncProgressAndResultUntilKey(test *testing.T) {
 		}
 		p := program{app: app}
 		_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
-		if calls != 0 || app.StartConfirmation.phase != startRunning || !strings.Contains(ansi.Strip(app.View()), t("tui.start_starting", "start-task")) {
+		if calls != 0 || app.StartConfirmation.phase != confirmRunning || !strings.Contains(ansi.Strip(app.View()), t("dialog.running_keys")) {
 			test.Fatal("confirmation must retain asynchronous progress dialog")
 		}
 		done := make(chan tea.Msg, 1)
@@ -147,14 +151,14 @@ func TestStartDialogRetainsAsyncProgressAndResultUntilKey(test *testing.T) {
 		for _, key := range []string{"y", "q", "esc", "ctrl-c", "s"} {
 			app.HandleKey(key)
 		}
-		if app.StartConfirmation.phase != startRunning || !app.Running || app.pendingWork != nil {
+		if app.StartConfirmation.phase != confirmRunning || !app.Running || app.pendingWork != nil {
 			test.Fatal("key closed progress dialog or queued another launch")
 		}
 		p.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 		close(release)
 		p.Update(<-done)
 		joined = true
-		if calls != 1 || app.StartConfirmation.phase != startFinished {
+		if calls != 1 || app.StartConfirmation.phase != confirmFinished {
 			test.Fatal("completion lost")
 		}
 		want := t("tui.start_success", "start-task", "claude", "herdr", ":")
@@ -162,7 +166,7 @@ func TestStartDialogRetainsAsyncProgressAndResultUntilKey(test *testing.T) {
 			want = "launch failed and rolled back"
 		}
 		view := ansi.Strip(app.View())
-		for _, text := range []string{want, "session warning", t("tui.start_result_keys")} {
+		for _, text := range []string{want, "session warning", t("dialog.result_keys")} {
 			if !strings.Contains(view, text) {
 				test.Fatalf("missing result %q: %s", text, view)
 			}
@@ -194,7 +198,7 @@ func TestStartDialogParagraphAndFooterLayout(test *testing.T) {
 		{3, "task\nsettings\nkeys"},
 	} {
 		view := viewport.New(40, tc.height)
-		got := fitStartDialog([]string{"task", "settings", "backlog"}, "keys", 40, tc.height, p, &view)
+		got := fitConfirmDialog([]string{"task", "settings", "backlog"}, "keys", 40, tc.height, p, &view)
 		lines := strings.Split(ansi.Strip(got), "\n")
 		for i := range lines {
 			lines[i] = strings.TrimRight(lines[i], " ")
@@ -207,7 +211,7 @@ func TestStartDialogParagraphAndFooterLayout(test *testing.T) {
 		}
 	}
 	app := startTestApp("backlog")
-	app.HandleKey("s")
+	app.confirmSelectedStart()
 	finishStartPreview(app)
 	_, popup := app.renderStartConfirmation()
 	lines := strings.Split(ansi.Strip(popup), "\n")
@@ -230,8 +234,8 @@ func TestStartDialogParagraphAndFooterLayout(test *testing.T) {
 
 func TestStartDialogTitleFollowsPhase(test *testing.T) {
 	app := startTestApp("todo")
-	app.HandleKey("s")
-	if title := startDialogTitleText(app); !strings.Contains(title, t("tui.start_loading")) || strings.Contains(title, t("tui.start_confirm")) {
+	app.confirmSelectedStart()
+	if title := startDialogTitleText(app); !strings.Contains(title, t("dialog.loading")) || strings.Contains(title, t("tui.start_confirm")) {
 		test.Fatalf("loading title: %q", title)
 	}
 	finishStartPreview(app)
@@ -239,37 +243,37 @@ func TestStartDialogTitleFollowsPhase(test *testing.T) {
 		test.Fatalf("ready title: %q", title)
 	}
 	app.HandleKey("y")
-	if title := startDialogTitleText(app); !strings.Contains(title, t("tui.start_title_starting")) || strings.Contains(title, "start-task") {
+	if title := startDialogTitleText(app); !strings.Contains(title, t("dialog.title_starting")) || strings.Contains(title, "start-task") {
 		test.Fatalf("running title: %q", title)
 	}
-	app.applyStartResult(startResult{
+	app.applyStartResult(confirmWork{
 		sequence: app.StartConfirmation.sequence,
-		result:   launch.StartResult{TaskID: "start-task", Agent: "claude", Plan: launch.LaunchPlan{Launcher: "herdr"}},
+		payload:  launch.StartResult{TaskID: "start-task", Agent: "claude", Plan: launch.LaunchPlan{Launcher: "herdr"}},
 	})
-	if title := startDialogTitleText(app); !strings.Contains(title, t("tui.start_title_started")) || strings.Contains(title, t("tui.start_confirm")) {
+	if title := startDialogTitleText(app); !strings.Contains(title, t("dialog.title_done")) || strings.Contains(title, t("tui.start_confirm")) {
 		test.Fatalf("success title: %q", title)
 	}
 
 	app = startTestApp("todo")
-	app.HandleKey("s")
+	app.confirmSelectedStart()
 	finishStartPreview(app)
 	app.HandleKey("y")
-	app.applyStartResult(startResult{sequence: app.StartConfirmation.sequence, err: errors.New("boom")})
-	if title := startDialogTitleText(app); !strings.Contains(title, t("tui.start_title_failed")) || strings.Contains(title, t("tui.start_confirm")) {
+	app.applyStartResult(confirmWork{sequence: app.StartConfirmation.sequence, err: errors.New("boom")})
+	if title := startDialogTitleText(app); !strings.Contains(title, t("dialog.title_failed")) || strings.Contains(title, t("tui.start_confirm")) {
 		test.Fatalf("failure title: %q", title)
 	}
 	app.StartConfirmation.message = t("tui.start_success", "start-task", "claude", "herdr", ":")
-	if title := startDialogTitleText(app); !strings.Contains(title, t("tui.start_title_failed")) || strings.Contains(title, t("tui.start_title_started")) {
+	if title := startDialogTitleText(app); !strings.Contains(title, t("dialog.title_failed")) || strings.Contains(title, t("dialog.title_done")) {
 		test.Fatalf("failed flag ignored: %q", title)
 	}
 	app.StartConfirmation.failed = false
 	app.StartConfirmation.message = t("tui.start_failed", "boom")
-	if title := startDialogTitleText(app); !strings.Contains(title, t("tui.start_title_started")) || strings.Contains(title, t("tui.start_title_failed")) {
+	if title := startDialogTitleText(app); !strings.Contains(title, t("dialog.title_done")) || strings.Contains(title, t("dialog.title_failed")) {
 		test.Fatalf("success flag ignored: %q", title)
 	}
 
 	app.Width, app.Height = 12, 24
-	for _, phase := range []startPhase{startLoading, startReady, startRunning, startFinished} {
+	for _, phase := range []confirmPhase{confirmLoading, confirmReady, confirmRunning, confirmFinished} {
 		app.StartConfirmation.phase = phase
 		_, popup := app.renderStartConfirmation()
 		for _, line := range strings.Split(ansi.Strip(popup), "\n") {

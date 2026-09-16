@@ -6,6 +6,8 @@ import (
 	"strings"
 
 	"github.com/dualface/kander/internal/config"
+	"github.com/dualface/kander/internal/terminal/builtin"
+	"github.com/dualface/kander/internal/terminal/direct"
 )
 
 func choicesWithCurrent(choices []Choice, current string) []Choice {
@@ -40,24 +42,27 @@ func languageChoices() []Choice {
 	return out
 }
 
-// agentLanguageFixedChoices is the options-panel list for agent_language.
-// Labels are endonyms and are not translated with the interface language.
-var agentLanguageFixedChoices = []Choice{
-	{Value: "en", Label: "English"},
-	{Value: "zh-CN", Label: "简体中文"},
-	{Value: "zh-TW", Label: "繁體中文"},
-	{Value: "ja", Label: "日本語"},
-	{Value: "ko", Label: "한국어"},
-	{Value: "es", Label: "Español"},
-	{Value: "fr", Label: "Français"},
-	{Value: "de", Label: "Deutsch"},
+// agentLanguageFixedChoices is the options-panel list for agent_language: each
+// stored code with the catalog ID of its label.
+var agentLanguageFixedChoices = []struct{ value, labelID string }{
+	{"en", "menu.agent_language_choice.en"},
+	{"zh-CN", "menu.agent_language_choice.zh_cn"},
+	{"zh-TW", "menu.agent_language_choice.zh_tw"},
+	{"ja", "menu.agent_language_choice.ja"},
+	{"ko", "menu.agent_language_choice.ko"},
+	{"es", "menu.agent_language_choice.es"},
+	{"fr", "menu.agent_language_choice.fr"},
+	{"de", "menu.agent_language_choice.de"},
 }
 
-// agentLanguageChoices returns the fixed list, appending the current stored value
-// when it is outside the list so hand-edited codes are not silently replaced.
+// agentLanguageChoices returns the fixed list with labels in the current interface
+// language, appending the current stored value when it is outside the list so
+// hand-edited codes are not silently replaced; that value is labeled by its code.
 func agentLanguageChoices(current string) []Choice {
-	out := make([]Choice, len(agentLanguageFixedChoices))
-	copy(out, agentLanguageFixedChoices)
+	out := make([]Choice, 0, len(agentLanguageFixedChoices)+1)
+	for _, item := range agentLanguageFixedChoices {
+		out = append(out, Choice{Value: item.value, Label: config.Text(item.labelID)})
+	}
 	current = strings.TrimSpace(current)
 	if current == "" {
 		return out
@@ -75,11 +80,11 @@ func installTmux() bool {
 		name string
 		argv []string
 	}{
-		{"brew", []string{"brew", "install", "tmux"}},
-		{"apt-get", []string{"apt-get", "install", "-y", "tmux"}},
-		{"dnf", []string{"dnf", "install", "-y", "tmux"}},
-		{"pacman", []string{"pacman", "-S", "--needed", "--noconfirm", "tmux"}},
-		{"apk", []string{"apk", "add", "tmux"}},
+		{"brew", []string{"brew", "install", builtin.TmuxExecutable}},
+		{"apt-get", []string{"apt-get", "install", "-y", builtin.TmuxExecutable}},
+		{"dnf", []string{"dnf", "install", "-y", builtin.TmuxExecutable}},
+		{"pacman", []string{"pacman", "-S", "--needed", "--noconfirm", builtin.TmuxExecutable}},
+		{"apk", []string{"apk", "add", builtin.TmuxExecutable}},
 	}
 	var selected []string
 	for _, manager := range managers {
@@ -105,7 +110,7 @@ func installTmux() bool {
 	cmd.Stdin = os.Stdin
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
-	if err := cmd.Run(); err != nil || lookPath("tmux") == "" {
+	if err := cmd.Run(); err != nil || lookPath(builtin.TmuxExecutable) == "" {
 		warning(config.Text("menu.tmux_installation_failed_or_tmux_is_still_not_in"))
 		return false
 	}
@@ -122,30 +127,31 @@ func autoLauncherChoice() Choice {
 
 func tmuxLauncherChoices() []Choice {
 	return []Choice{
-		{Value: "tmux", Label: config.Text("menu.new_window_in_the_current_tmux_session")},
-		{Value: "tmux-session", Label: config.Text("menu.new_window_in_a_per_project_tmux_session")},
+		{Value: builtin.Tmux, Label: config.Text("menu.new_window_in_the_current_tmux_session")},
+		{Value: builtin.TmuxSession, Label: config.Text("menu.new_window_in_a_per_project_tmux_session")},
 	}
 }
 
 func herdrLauncherChoices(cfg *config.Config) []Choice {
-	installed := lookPath("herdr") != ""
-	if !installed && cfg.Launcher != "herdr" {
+	installed := lookPath(builtin.HerdrExecutable) != ""
+	if !installed && cfg.Launcher != builtin.Herdr {
 		return nil
 	}
 	label := config.Text("menu.new_tab_in_the_current_herdr_workspace")
 	if !installed {
 		label += config.Text("menu.not_currently_installed")
 	}
-	return []Choice{{Value: "herdr", Label: label}}
+	return []Choice{{Value: builtin.Herdr, Label: label}}
 }
 
 // windowsLauncherChoices leaves out tmux: native Windows has none.
 // herdr has a native Windows build, so it is offered once installed.
 func windowsLauncherChoices(cfg *config.Config) []Choice {
-	choices := []Choice{{Value: "console", Label: config.Text("menu.separate_windows_console")}}
+	choices := []Choice{{Value: direct.Console, Label: config.Text("menu.separate_windows_console")}}
 	choices = append(choices, herdrLauncherChoices(cfg)...)
+	choices = append(choices, definitionLauncherChoices()...)
 	return append(choices, Choice{
-		Value: "foreground", Label: config.Text("menu.foreground_in_this_terminal"),
+		Value: direct.Foreground, Label: config.Text("menu.foreground_in_this_terminal"),
 	})
 }
 
@@ -165,6 +171,18 @@ func copyModels(src config.Models) config.Models {
 		}
 		for key, value := range entry {
 			out.Review[agent][key] = value
+		}
+	}
+	// Keep Chat sparse: DefaultModels pre-creates every built-in Chat entry,
+	// which would hide a later EnsureChatEntry fallback to that agent's
+	// effective kanban large values.
+	out.Chat = map[string]map[string]string{}
+	for agent, entry := range src.Chat {
+		if out.Chat[agent] == nil {
+			out.Chat[agent] = map[string]string{}
+		}
+		for key, value := range entry {
+			out.Chat[agent][key] = value
 		}
 	}
 	for role, entry := range src.ReviewRoles {

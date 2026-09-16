@@ -203,7 +203,13 @@ func TestDispatchWrapUpTakeoverAndExpiry(t *testing.T) {
 	if _, err := dispatchMove(t, root, d, "working"); err != nil {
 		t.Fatal(err)
 	}
-	successor, err := ReauthorizeDispatch(root, s.Entry.TaskID, d.Input.ID, 2)
+	s = transactionSnapshot(t, root, s.Entry.TaskID)
+	text, _ := setMetadata(s.Text, FieldSession, "original-session")
+	if err := WriteManagedDocument(root, s.Entry, text); err != nil {
+		t.Fatal(err)
+	}
+	s = transactionSnapshot(t, root, s.Entry.TaskID)
+	successor, err := ReauthorizeDispatch(root, s.Entry.TaskID, d.Input.ID, 2, stoppedDispatchFixture(s))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -291,9 +297,13 @@ func TestDispatchFencesReviewAuthorDisposition(t *testing.T) {
 	f := ReviewFinding{ID: "PM-01", Tier: "medium", Text: "原文", Evidence: "x:1"}
 	findings := emptyFindings()
 	findings.Findings = []ReviewFinding{f}
-	run := gateRun(t, root, archiveInput([]string{id}, "pm", "PM"), findings)
+	run := gateRun(t, root, archiveInput([]string{id}, "pm", "PMQA"), findings)
 	assignGate(t, root, run, map[string][]string{f.ID: {id}})
 	s := transactionSnapshot(t, root, id)
+	text, _ := setMetadata(s.Text, FieldSession, "codex disposition-session")
+	if err := WriteManagedDocument(root, s.Entry, text); err != nil {
+		t.Fatal(err)
+	}
 	grant := prepareTestDispatch(t, root, dispatchInput(s, "author-round"))
 	if _, err := dispatchMove(t, root, grant, "working"); err != nil {
 		t.Fatal(err)
@@ -309,7 +319,23 @@ func TestDispatchFencesReviewAuthorDisposition(t *testing.T) {
 	if err := SubmitReviewDisposition(root, d, s.Revision); err == nil {
 		t.Fatal("wrong epoch submitted review disposition")
 	}
+	current, err := ReadDispatch(root, id, grant.Input.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	next, err := ReauthorizeDispatch(root, id, grant.Input.ID, current.Revision, stoppedDispatchFixture(s))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = dispatchMove(t, root, next, "working"); err != nil {
+		t.Fatal(err)
+	}
+	s = transactionSnapshot(t, root, id)
 	d.Authorization = &grant.Authorization
+	if err := SubmitReviewDisposition(root, d, s.Revision); err == nil {
+		t.Fatal("retired epoch submitted disposition using current revision")
+	}
+	d.Authorization = &next.Authorization
 	if err := SubmitReviewDisposition(root, d, s.Revision); err != nil {
 		t.Fatal(err)
 	}

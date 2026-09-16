@@ -29,7 +29,7 @@ func TestRepairPreservesValidSettingsAndBacksUpOriginal(t *testing.T) {
 	if !result.Changed || result.Created || result.BackupPath == "" {
 		t.Fatalf("result=%+v", result)
 	}
-	if cfg.Language != "en" || cfg.KanbanAgent != "claude" || cfg.KanbanAgents["small"] != "claude" || cfg.Reviewers["PM"] != "claude" || cfg.Reviewers["QA"] != "codex" {
+	if cfg.Language != "en" || cfg.KanbanAgent != "claude" || cfg.KanbanAgents["small"] != "claude" || cfg.Reviewers["large"]["PMQA"] != "claude" {
 		t.Fatalf("valid selections lost: %+v", cfg)
 	}
 	if cfg.TUI.Theme != "dark" || cfg.TUI.Refresh != 15 || cfg.TUI.Columns != DefaultTUIColumns || cfg.Models.Kanban["claude"]["large_model"] != "my-model" || cfg.Models.Review["codex"]["model"] != "custom-review" {
@@ -142,10 +142,10 @@ func TestRepairFillsMissingReviewStageScaleFromTheOther(t *testing.T) {
 	if !result.Changed {
 		t.Fatal("missing small scale must be rewritten")
 	}
-	if cfg.ReviewStages["large"]["PM"] != "required" || cfg.ReviewStages["small"]["PM"] != "required" {
+	if cfg.ReviewStages["large"]["PMQA"] != "required" || cfg.ReviewStages["small"]["PMQA"] != "required" {
 		t.Fatalf("missing scale not copied: %+v", cfg.ReviewStages)
 	}
-	if cfg.ReviewStages["small"]["CSA"] != "skip" {
+	if cfg.ReviewStages["small"]["Security"] != "skip" {
 		t.Fatalf("copied scale incomplete: %+v", cfg.ReviewStages["small"])
 	}
 
@@ -176,8 +176,8 @@ func TestRepairWritesWhenOnlyOneReviewStageScaleIsMissing(t *testing.T) {
 	t.Setenv(EnvConfig, path)
 	complete := DefaultConfig()
 	complete.WelcomeComplete = true
-	complete.ReviewStages["large"]["PM"] = "required"
-	complete.ReviewStages["small"]["PM"] = "required"
+	complete.ReviewStages["large"]["PMQA"] = "required"
+	complete.ReviewStages["small"]["PMQA"] = "required"
 	if _, err := Save(complete); err != nil {
 		t.Fatal(err)
 	}
@@ -212,7 +212,7 @@ func TestRepairWritesWhenOnlyOneReviewStageScaleIsMissing(t *testing.T) {
 	if !result.Changed {
 		t.Fatal("a normalized config missing only small must be rewritten")
 	}
-	if repaired.ReviewStages["small"]["PM"] != "required" {
+	if repaired.ReviewStages["small"]["PMQA"] != "required" {
 		t.Fatalf("in-memory small=%v", repaired.ReviewStages["small"])
 	}
 	onDisk, err := os.ReadFile(path)
@@ -223,7 +223,7 @@ func TestRepairWritesWhenOnlyOneReviewStageScaleIsMissing(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.ReviewStages["small"]["PM"] != "required" {
+	if loaded.ReviewStages["small"]["PMQA"] != "required" {
 		t.Fatalf("disk small=%v", loaded.ReviewStages["small"])
 	}
 }

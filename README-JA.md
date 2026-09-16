@@ -10,12 +10,13 @@
 
 ## 1. クイックスタート
 
-実行には Git と、Codex、Claude、Grok、Cursor のうち少なくとも 1 つが必要です。
+実行には Git と、Codex、Claude、Grok、Cursor、Pi のうち少なくとも 1 つが必要です。
 
 **macOS** — Homebrew でインストールします：
 
 ```sh
 brew install dualface/tap/kander
+
 kander
 ```
 
@@ -24,6 +25,7 @@ kander
 ```sh
 ARCH=$(uname -m); [ "$ARCH" = x86_64 ] && ARCH=amd64; [ "$ARCH" = aarch64 ] && ARCH=arm64
 curl -fsSL "https://github.com/dualface/kander/releases/latest/download/kander-linux-${ARCH}.tar.gz" | tar xz
+
 ./kander
 ```
 
@@ -44,12 +46,16 @@ kander
 
 ![ターミナルカンバン](docs/kanban-screenshot-01.png)
 
-`o` → インターフェース → テーマで **Tide**、**Dusk**、**Slate Dark**、**Slate Light** を選べます。Slate のダーク／ライトは herdr などのグレーブルーの端末に調和します。既存テーマと既定設定も引き続き利用できます。
-
 > 上図のカンバンの内容は私の実プロジェクト [https://quicktui.ai](https://quicktui.ai) のものです。QuickTUI はコンピュータ上のさまざまな Agent をリモート操作するツールで、iOS/Android/macOS/Linux/Windows に対応し、無料で使えます。
 
 さらに詳しく: スライド [タスクを効率的に進める方法](docs/how-to-advance-tasks-efficiently-ja.pdf) (PDF) を参照してください。
 
-## 2. ライセンス
+## 2. GitHub 連携
+
+プロジェクトを GitHub リポジトリに紐づけるには [GitHub CLI](https://cli.github.com/)（`gh`）が必要です。Kander はトークンを要求・読み取り・保存せず、`gh` が管理する認証情報をそのまま利用します。
+
+端末ボードで `g` を押すと、GitHub Issue の一覧がオーバーレイで開きます。
+
+## 3. ライセンス
 
 本プロジェクトは MIT License を使用しています。[LICENSE](LICENSE) を参照してください。

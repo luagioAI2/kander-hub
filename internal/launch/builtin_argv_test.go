@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"runtime"
 	"strings"
 	"testing"
@@ -16,7 +17,7 @@ func TestBuiltinAgentArgumentsMatchPreChangeOutput(t *testing.T) {
 	cfg := config.DefaultConfig()
 	models := cfg.Models.Kanban
 	const sid = "session-id"
-	for _, agent := range []string{"codex", "claude", "grok", "cursor"} {
+	for _, agent := range []string{"codex", "claude", "grok", "cursor", "dsh"} {
 		for _, kind := range []string{"large", "small"} {
 			for _, resume := range []bool{false, true} {
 				for _, hasSession := range []bool{true, false} {
@@ -67,6 +68,16 @@ func TestBuiltinAgentArgumentsMatchPreChangeOutput(t *testing.T) {
 							want = append(want, "--model", modelID)
 						}
 						want = append(want, "--trust", "--force", "--resume", ref)
+					case "dsh":
+						// dsh is this fork's extra built-in agent (upstream ships pi
+						// in that slot). Its args templates carry no {model}/{effort}
+						// placeholders: the tui profile only takes its own flags, and
+						// the generated session rides on --resume. Without a session
+						// reference there is nothing to resume, so the start args stand.
+						want = []string{"--profile", "tui"}
+						if resume && ref != "" {
+							want = append(want, "--resume", ref)
+						}
 					}
 					name := agent + "/" + kind
 					if resume {
@@ -127,5 +138,32 @@ func TestBuiltinStartKeepsPromptOnArgvAndDoesNotDeliverToPane(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestDshStartUsesAGeneratedUUIDSession(t *testing.T) {
+	cfg := config.DefaultConfig()
+	session, err := newAgentSession("dsh", nil, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Agent != "dsh" || !regexp.MustCompile(`^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$`).MatchString(session.Reference) {
+		t.Fatalf("dsh session %+v is not a generated UUID", session)
+	}
+	// The tui profile takes no model/effort flags, so the start argv is just the
+	// profile; the generated session is carried on resume instead.
+	got, err := agentArguments("dsh", cfg.Models.Kanban["dsh"], "small", session, false, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(got, []string{"--profile", "tui"}) {
+		t.Fatalf("start argv %q is not the bare tui profile", got)
+	}
+	resumed, err := agentArguments("dsh", cfg.Models.Kanban["dsh"], "small", session, true, cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !reflect.DeepEqual(resumed, []string{"--profile", "tui", "--resume", session.Reference}) {
+		t.Fatalf("resume argv %q does not carry the generated session", resumed)
 	}
 }

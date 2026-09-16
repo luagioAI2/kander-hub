@@ -219,7 +219,7 @@ func makeDone(t *testing.T, root, slug, window string) (string, string) {
 		t.Fatal(err)
 	}
 	// Dismissal fixtures record review as explicitly inapplicable before completion.
-	requirements := map[string]string{"PM": "N/A: dismissal fixture", "QA": "N/A: dismissal fixture", "CSA": "N/A: dismissal fixture", "Hacker": "N/A: dismissal fixture"}
+	requirements := map[string]string{"PMQA": "N/A: dismissal fixture", "Security": "N/A: dismissal fixture"}
 	batchID := "dismiss-" + slug
 	p := board.ReviewPlan{Schema: 1, Sealed: true, PlanID: batchID, Author: "fixture", Basis: "container cleanup test", CWD: "/repo", ReportLanguage: "en", TaskIDs: []string{review.TaskID}, Batches: []board.ReviewPlanBatch{{BatchID: batchID, TaskIDs: []string{review.TaskID}, Base: strings.Repeat("a", 40), TargetCommit: strings.Repeat("b", 40), Requirements: requirements}}}
 	if err = board.CreateReviewPlan(root, p); err != nil {
@@ -350,6 +350,12 @@ func TestAgentExitCommands(t *testing.T) {
 	}
 	quit, err := AgentExitCommand("cursor")
 	if err != nil || quit != "/quit" {
-		t.Fatal(quit, err)
+		t.Fatal("cursor", quit, err)
+	}
+	// This fork's extra built-in agent is dsh (upstream ships pi here), and it
+	// leaves through /exit like claude rather than /quit.
+	dshExit, err := AgentExitCommand("dsh")
+	if err != nil || dshExit != "/exit" {
+		t.Fatal("dsh", dshExit, err)
 	}
 }

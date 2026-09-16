@@ -14,6 +14,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/x/ansi"
 	"golang.org/x/sys/unix"
 
 	"github.com/dualface/kander/internal/board"
@@ -129,6 +130,20 @@ func (s *ptySession) textFrom(offset int) string {
 		offset = len(s.out)
 	}
 	return string(s.out[offset:])
+}
+
+// waitForPlain waits for text to appear after every ANSI sequence is stripped,
+// which is what styled Markdown needs: escape codes can split a phrase.
+func (s *ptySession) waitForPlain(needle string, timeout time.Duration) bool {
+	s.t.Helper()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if strings.Contains(ansi.Strip(s.text()), needle) {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
 }
 
 // waitFor waits for some text to appear in the pseudo-terminal output.
@@ -250,7 +265,7 @@ func TestBareKanderBootstrapsConfigAndOpensInterfaceOptionsOnPTY(t *testing.T) {
 	if !session.waitFor("Task Board", 8*time.Second) {
 		t.Fatalf("board did not render\npty:\n%s", session.text())
 	}
-	if !session.waitFor("Default language", 10*time.Second) {
+	if !session.waitFor("Interface and prompt language", 10*time.Second) {
 		t.Fatalf("interface options did not open\npty:\n%s", session.text())
 	}
 	configPath := configPathFromEnv(t, env)
@@ -258,7 +273,7 @@ func TestBareKanderBootstrapsConfigAndOpensInterfaceOptionsOnPTY(t *testing.T) {
 		t.Fatalf("doctor did not create config: %v", err)
 	}
 	session.send("\r")
-	if !session.waitFor("Save and apply", 4*time.Second) {
+	if !session.waitFor("Review and models", 4*time.Second) {
 		t.Fatalf("interface did not return to options root\npty:\n%s", session.text())
 	}
 	session.send("q")
@@ -280,7 +295,7 @@ func TestBareKanderBootstrapsConfigAndOpensInterfaceOptionsOnPTY(t *testing.T) {
 	}
 }
 
-// Press o on the board to open the options panel.
+// Press o to open options; detect a top item because Save can scroll below the viewport.
 func TestBoardOpensOptionsPanelOnPTY(t *testing.T) {
 	bin := buildKander(t)
 	_, env := boardEnv(t)
@@ -290,7 +305,7 @@ func TestBoardOpensOptionsPanelOnPTY(t *testing.T) {
 		t.Fatalf("board did not render\npty:\n%s", session.text())
 	}
 	session.send("o")
-	if !session.waitFor("Save and apply", 10*time.Second) {
+	if !session.waitFor("Review and models", 10*time.Second) {
 		t.Fatalf("options panel did not open\npty:\n%s", session.text())
 	}
 	// A gap is required between Esc and the following key, otherwise the terminal parses them as alt+<key>.
@@ -314,29 +329,35 @@ func TestOptionsProjectTabsAndNarrowPathsOnPTY(t *testing.T) {
 		t.Fatalf("board did not render\npty:\n%s", session.text())
 	}
 	session.send("o")
-	if !session.waitFor("Save and apply", 10*time.Second) {
+	if !session.waitFor("Review and models", 10*time.Second) {
 		t.Fatalf("options panel did not open\npty:\n%s", session.text())
 	}
 	plain := session.text()
 	if !strings.Contains(plain, "Global") || !strings.Contains(plain, "Project") {
 		t.Fatalf("global install should show both tabs\npty:\n%s", plain)
 	}
+	if !strings.Contains(plain, "· Tab") || strings.Contains(plain, "Tab [ ]") {
+		t.Fatalf("options hint must show only the Tab key\npty:\n%s", plain)
+	}
 	if !strings.Contains(plain, project) {
 		t.Fatalf("missing project path\npty:\n%s", plain)
-	}
-	if !strings.Contains(plain, overlay) && !strings.Contains(plain, config.OverlayFilename) {
-		t.Fatalf("missing overlay path\npty:\n%s", plain)
 	}
 	if !strings.Contains(plain, configPath) && !strings.Contains(plain, filepath.Base(configPath)) {
 		t.Fatalf("missing base config path\npty:\n%s", plain)
 	}
-	session.send("]")
-	if !session.waitFor("Overlay file does not exist yet", 6*time.Second) {
-		t.Fatalf("project tab did not show create hint\npty:\n%s", session.text())
+	if strings.Contains(plain, overlay) || strings.Contains(plain, config.OverlayFilename) {
+		t.Fatalf("global tab should hide overlay path\npty:\n%s", plain)
+	}
+	session.send("\t")
+	if !session.waitFor("not created yet", 6*time.Second) {
+		t.Fatalf("project tab did not show missing overlay placeholder\npty:\n%s", session.text())
+	}
+	if plain = session.text(); strings.Contains(plain, overlay) || strings.Contains(plain, config.OverlayFilename) {
+		t.Fatalf("missing overlay should not show a path\npty:\n%s", plain)
 	}
 	session.send("\r")
-	if !session.waitFor("Global:", 6*time.Second) {
-		t.Fatalf("project tab did not show inherit prefix\npty:\n%s", session.text())
+	if !session.waitForPlain("(inherited ", 15*time.Second) {
+		t.Fatalf("project tab did not show inherited marker\npty:\n%s", session.text())
 	}
 	before := session.size()
 	session.resize(24, 48)
@@ -346,13 +367,13 @@ func TestOptionsProjectTabsAndNarrowPathsOnPTY(t *testing.T) {
 	session.send("\x1b[B")
 	deadline := time.Now().Add(4 * time.Second)
 	for time.Now().Before(deadline) {
-		if strings.Contains(session.textFrom(before), config.OverlayFilename) {
+		if strings.Contains(session.textFrom(before), "not created yet") {
 			break
 		}
 		time.Sleep(50 * time.Millisecond)
 	}
-	if !strings.Contains(session.textFrom(before), config.OverlayFilename) {
-		t.Fatalf("narrow resize dropped overlay leaf\npty:\n%q", session.textFrom(before))
+	if !strings.Contains(session.textFrom(before), "not created yet") {
+		t.Fatalf("narrow resize dropped overlay placeholder\npty:\n%q", session.textFrom(before))
 	}
 	session.send("\x1b")
 	time.Sleep(300 * time.Millisecond)
@@ -476,4 +497,141 @@ func openPTY() (master, slave *os.File, err error) {
 		return nil, nil, err
 	}
 	return master, slave, nil
+}
+
+// writeFakeIssueCommands installs a fake gh and git into the child PATH so the
+// issues smoke test never reaches the network. The git wrapper answers the
+// local-remote query and defers everything else to the real git.
+func writeFakeIssueCommands(t *testing.T, env []string) {
+	t.Helper()
+	fakeBin := ""
+	for _, item := range env {
+		if value, ok := strings.CutPrefix(item, "PATH="); ok {
+			fakeBin, _, _ = strings.Cut(value, string(os.PathListSeparator))
+		}
+	}
+	if fakeBin == "" {
+		t.Fatal("PATH missing from the child environment")
+	}
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	gh := `#!/bin/sh
+if [ -n "$KANDER_GH_LOG" ]; then printf '%s\n' "$*" >> "$KANDER_GH_LOG"; fi
+case "$*" in
+  *"repo view"*)
+    printf '%s\n' '{"nameWithOwner":"dualface/kander","url":"https://github.com/dualface/kander","isPrivate":false}'
+    ;;
+  *"/issues/42/comments"*)
+    printf '%s\n' '[{"body":"PTY comment body","user":{"login":"carol"},"html_url":"https://github.com/dualface/kander/issues/42#issuecomment-1","created_at":"2026-09-11T02:10:00Z"}]'
+    ;;
+  *"/issues/42"*)
+    printf '%s\n' '{"number":42,"title":"PTY issue title","state":"open","html_url":"https://github.com/dualface/kander/issues/42","body":"PTY body marker","user":{"login":"alice"},"labels":[{"name":"bug"}],"assignees":[],"created_at":"2026-09-10T01:00:00Z","updated_at":"2026-09-11T02:03:00Z"}'
+    ;;
+  *"/issues"*)
+    printf '%s\n' '[{"number":42,"title":"PTY issue title","state":"open","html_url":"https://github.com/dualface/kander/issues/42","labels":[{"name":"bug"}],"updated_at":"2026-09-11T02:03:00Z"}]'
+    ;;
+  *)
+    printf '%s\n' '{}'
+    ;;
+esac
+`
+	git := "#!/bin/sh\n" +
+		"if [ \"$1\" = \"config\" ] && [ \"$2\" = \"--local\" ] && [ \"$3\" = \"--list\" ]; then\n" +
+		"  printf '%s\\n' 'remote.origin.url=https://github.com/dualface/kander.git' 'remote.origin.fetch=+refs/heads/*:refs/remotes/origin/*'\n" +
+		"  exit 0\n" +
+		"fi\n" +
+		"exec " + strconv.Quote(realGit) + " \"$@\"\n"
+	for name, content := range map[string]string{"gh": gh, "git": git} {
+		if err := os.WriteFile(filepath.Join(fakeBin, name), []byte(content), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+// Pressing g opens the issues overlay, Enter loads the detail with comments,
+// and closing the overlay returns to the untouched board.
+func TestIssuesOverlayOnPTY(t *testing.T) {
+	bin := buildKander(t)
+	_, env := boardEnv(t)
+	writeCompleteConfig(t, env)
+	writeFakeIssueCommands(t, env)
+	logPath := filepath.Join(t.TempDir(), "gh.log")
+	env = append(env, "KANDER_GH_LOG="+logPath)
+	session := startPTY(t, bin, env)
+	if !session.waitFor("Task Board", 8*time.Second) {
+		t.Fatalf("board did not render\npty:\n%s", session.text())
+	}
+	session.send("g")
+	if !session.waitFor("GitHub Issue", 10*time.Second) {
+		t.Fatalf("issues overlay did not open\npty:\n%s", session.text())
+	}
+	if !session.waitForPlain("PTY issue title", 10*time.Second) {
+		t.Fatalf("issue list did not load\npty:\n%s", session.text())
+	}
+	session.send("\r")
+	if !session.waitForPlain("PTY body marker", 10*time.Second) {
+		logged, _ := os.ReadFile(logPath)
+		t.Fatalf("issue detail did not load\ngh:\n%s\npty:\n%s", logged, session.text())
+	}
+	if !session.waitForPlain("PTY comment body", 10*time.Second) {
+		t.Fatalf("issue comments did not load\npty:\n%s", session.text())
+	}
+	session.send("\x1b")
+	time.Sleep(300 * time.Millisecond)
+	session.send("q")
+	if err := session.waitExit(8 * time.Second); err != nil {
+		t.Fatalf("exit: %v\npty:\n%s", err, session.text())
+	}
+}
+
+// Pressing s on an unbound issue opens the takeover confirmation dialog over
+// the overlay; cancelling it leaves the board untouched, without a card and
+// without a source attachment.
+func TestIssueTakeoverDialogOnPTY(t *testing.T) {
+	bin := buildKander(t)
+	root, env := boardEnv(t)
+	writeCompleteConfig(t, env)
+	writeFakeIssueCommands(t, env)
+	// The default launcher resolves through the environment; a tmux marker makes
+	// `auto` resolvable without starting anything.
+	env = append(env, "TMUX=/tmp/pty-tmux,1,0", "TMUX_PANE=%419")
+	session := startPTY(t, bin, env)
+	if !session.waitFor("Task Board", 8*time.Second) {
+		t.Fatalf("board did not render\npty:\n%s", session.text())
+	}
+	session.send("g")
+	if !session.waitFor("GitHub Issue", 10*time.Second) {
+		t.Fatalf("issues overlay did not open\npty:\n%s", session.text())
+	}
+	if !session.waitForPlain("PTY issue title", 10*time.Second) {
+		t.Fatalf("issue list did not load\npty:\n%s", session.text())
+	}
+	session.send("s")
+	if !session.waitForPlain("Take over issue #42", 20*time.Second) {
+		t.Fatalf("takeover dialog did not open\npty:\n%s", session.text())
+	}
+	if !session.waitForPlain("Agent:", 10*time.Second) {
+		t.Fatalf("takeover dialog is missing the resolved settings\npty:\n%s", session.text())
+	}
+	// Cancel the dialog, close the overlay and quit; a single Esc at a time keeps
+	// the terminal from reading two rapid escapes as one Alt+Esc sequence.
+	session.send("\x1b")
+	time.Sleep(300 * time.Millisecond)
+	if !session.waitForPlain("GitHub Issues", 5*time.Second) {
+		t.Fatalf("cancelling the dialog must return to the overlay\npty:\n%s", session.text())
+	}
+	if cards, err := os.ReadDir(filepath.Join(root, "backlog")); err != nil || len(cards) != 0 {
+		t.Fatalf("cancelling the dialog touched the board: %v %v", cards, err)
+	}
+	session.send("\x1b")
+	time.Sleep(300 * time.Millisecond)
+	session.send("q")
+	if err := session.waitExit(8 * time.Second); err != nil {
+		t.Fatalf("exit: %v\npty:\n%s", err, session.text())
+	}
+	if cards, err := os.ReadDir(filepath.Join(root, "backlog")); err != nil || len(cards) != 0 {
+		t.Fatalf("the takeover dialog created a backlog card: %v %v", cards, err)
+	}
 }

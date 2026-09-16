@@ -36,14 +36,16 @@ func archiveHarnessFor(t *testing.T, h *reviewHarness, agent string) (*reviewHar
 		t.Fatal(err)
 	}
 	requirements := filepath.Join(h.root, "requirements.json")
-	if err := os.WriteFile(requirements, []byte("{\"PM\":\"required\",\"QA\":\"required\",\"CSA\":\"N/A: project\",\"Hacker\":\"N/A: project\"}"), 0600); err != nil {
+	if err := os.WriteFile(requirements, []byte("{\"PMQA\":\"required\",\"Security\":\"N/A: project\"}"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	args := []string{agent, "--task", id, "--task", id, "--run-id", "stable", "--batch-id", "batch", "--requirements-file", requirements, h.repo, h.base, h.head, "PM", "原始目标"}
+	args := []string{agent, "--task", id, "--task", id, "--run-id", "stable", "--batch-id", "batch", "--requirements-file", requirements, h.repo, h.base, h.head, "PMQA", "原始目标"}
 	return h, root, args
 }
 func TestArchiveCLIOutputRetryAndLanguage(t *testing.T) {
 	h, root, args := archiveHarness(t)
+	contractMode := filepath.Join(h.root, "contract.mode")
+	t.Setenv("FAKE_CODEX_CONTRACT_MODE", contractMode)
 	report := "FAIL: 原始审核意见\n" + emptyStructuredReview
 	t.Setenv("FAKE_CODEX_REPORT", report)
 	code, out, stderr := captureRun(t, args)
@@ -65,8 +67,15 @@ func TestArchiveCLIOutputRetryAndLanguage(t *testing.T) {
 		t.Fatalf("%q %v", raw, err)
 	}
 	prompt, err := board.ReadReviewOriginal(root, "stable", "prompt.txt")
-	if err != nil || !strings.Contains(string(prompt), "zh-CN") {
+	if err != nil || !strings.Contains(string(prompt), "review-contract.md") {
 		t.Fatalf("%s %v", prompt, err)
+	}
+	contract, err := board.ReadReviewOriginal(root, "stable", "review-contract.md")
+	if err != nil || !strings.Contains(string(contract), "zh-CN") || run.Hashes["review-contract.md"] != board.ReviewDigest(contract) {
+		t.Fatalf("contract hash/archive mismatch: %s %v", contract, err)
+	}
+	if mode := strings.TrimSpace(readFile(t, contractMode)); !strings.HasPrefix(mode, "-r--------") {
+		t.Fatalf("runtime contract mode=%q", mode)
 	}
 	// The retry may run after the worktree advanced or the CLI disappeared.
 	if err = os.Remove(h.fake); err != nil {
@@ -253,7 +262,7 @@ func TestArchiveBatchAdvanceRangeAttribution(t *testing.T) {
 	if err = board.UpdateDocument(root, options.tasks[0], board.UpdateOptions{Document: "spec.md", Text: snapshot.Text + "\n## IMPLEMENTATION\n\nFix delivery recorded\n", ExpectedRevision: snapshot.Revision}); err != nil {
 		t.Fatal(err)
 	}
-	nextArgs := []string{"codex", "--task", options.tasks[0], "--batch-id", "batch", "--run-id", "fixed", "--previous-run-id", "stable", "--advance-file", path, h.repo, h.base, next, "PM", snapshot.Entry.Document, "fix context", h.head}
+	nextArgs := []string{"codex", "--task", options.tasks[0], "--batch-id", "batch", "--run-id", "fixed", "--previous-run-id", "stable", "--advance-file", path, h.repo, h.base, next, "PMQA", snapshot.Entry.Document, "fix context", h.head}
 	writeAdvance := func() {
 		t.Helper()
 		data, err := json.Marshal(advance)
@@ -367,7 +376,7 @@ func TestStandaloneReviewIgnoresInvalidBoard(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv(board.EnvBoardDir, obstruction)
-	code, _, stderr := h.review("codex", "PM", "goal")
+	code, _, stderr := h.review("codex", "PMQA", "goal")
 	if code != 0 {
 		t.Fatalf("%d %s", code, stderr)
 	}

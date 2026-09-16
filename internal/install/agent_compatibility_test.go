@@ -8,10 +8,12 @@ import (
 	"github.com/dualface/kander/internal/config"
 )
 
-// Expectations are pinned to integrate.go at 8abdfe2e, before embedded definitions.
+// Expectations for codex/claude/grok/cursor are pinned to integrate.go at 8abdfe2e,
+// before embedded definitions; this fork's extra embedded agent is dsh (upstream
+// ships pi there) and it pins its own ~/.dsh/AGENTS.md target.
 func TestBuiltinIntegrationPreservesTargetsAndBytes(t *testing.T) {
 	for _, mode := range []config.Mode{config.ModeGlobal, config.ModeProject} {
-		for _, agent := range []string{"codex", "claude", "grok", "cursor"} {
+		for _, agent := range []string{"codex", "claude", "grok", "cursor", "dsh"} {
 			for _, existing := range []bool{false, true} {
 				name := string(mode) + "/" + agent + "/create"
 				if existing {
@@ -24,6 +26,9 @@ func TestBuiltinIntegrationPreservesTargetsAndBytes(t *testing.T) {
 					target := filepath.Join(home, "."+agent, "AGENTS.md")
 					if agent == "claude" {
 						target = filepath.Join(home, ".claude", "CLAUDE.md")
+					}
+					if agent == "dsh" {
+						target = filepath.Join(home, ".dsh", "AGENTS.md")
 					}
 					if mode == config.ModeProject {
 						project := t.TempDir()

@@ -38,21 +38,64 @@ func planName(id string) string     { return "plans/" + id + ".json" }
 func taskPlanName(id string) string { return "task-plans/" + id + ".json" }
 func closureName(id string) string  { return "closures/" + id + ".json" }
 func validateRequirements(r map[string]string) error {
-	if len(r) != 4 {
-		return reviewError("all four role requirements required")
+	roles := reviewRequirementRoles(r)
+	if roles == nil {
+		return reviewError("requirements must contain PMQA and Security, or the historical four-role or six-role sets")
 	}
-	for _, role := range []string{"PM", "QA", "CSA", "Hacker"} {
-		value := r[role]
+	for _, role := range roles {
+		value, ok := r[role]
+		if !ok {
+			return reviewError("requirements must contain PMQA and Security, or the historical four-role or six-role sets")
+		}
 		if value != "required" && (!strings.HasPrefix(value, "N/A: ") || strings.TrimSpace(strings.TrimPrefix(value, "N/A: ")) == "") {
 			return reviewError("requirement reason and rule basis: " + role)
 		}
 	}
 	return nil
 }
+
+func validateNewRequirements(r map[string]string) error {
+	if err := validateRequirements(r); err != nil {
+		return err
+	}
+	if len(r) != 2 {
+		return reviewError("new requirements must contain PMQA and Security")
+	}
+	return nil
+}
+
+// Keep the historical four-role and six-role orders so old closure hashes remain stable.
+func reviewRequirementRoles(requirements map[string]string) []string {
+	switch len(requirements) {
+	case 2:
+		return []string{"PMQA", "Security"}
+	case 4:
+		return []string{"PM", "QA", "CSA", "Hacker"}
+	case 6:
+		return []string{"PM", "QA", "CSA", "Hacker", "PMQA", "Security"}
+	default:
+		return nil
+	}
+}
+
 func planCycle(s Snapshot) string {
-	return ReviewDigest([]byte(s.Entry.TaskID + "\n" + MetadataFrom(s.Text, FieldStartedAt)))
+	identity := s.Entry.TaskID + "\n" + MetadataFrom(s.Text, FieldStartedAt)
+	if claim := claimIdentity(s.Text); claim != "" {
+		identity += "\n" + claim
+	}
+	return ReviewDigest([]byte(identity))
 }
 func CreateReviewPlan(root string, p ReviewPlan) error {
+	return createReviewPlan(root, p, true)
+}
+
+// CreateHistoricalReviewPlan records a plan using the read-compatible 2/4/6-key
+// requirement shapes. Production `kander review plan` uses CreateReviewPlan.
+func CreateHistoricalReviewPlan(root string, p ReviewPlan) error {
+	return createReviewPlan(root, p, false)
+}
+
+func createReviewPlan(root string, p ReviewPlan, restrictNewShape bool) error {
 	if p.Schema != 1 || !ValidReviewID(p.PlanID) || strings.TrimSpace(p.Author) == "" || strings.TrimSpace(p.Basis) == "" || p.CWD == "" || len(p.Batches) == 0 {
 		return reviewError("review plan identity/provenance")
 	}
@@ -114,6 +157,13 @@ func CreateReviewPlan(root string, p ReviewPlan) error {
 				return reviewError("immutable review plan conflict")
 			}
 			return verifyPlanCopies(tx, p)
+		}
+		for _, b := range p.Batches {
+			if restrictNewShape {
+				if err = validateNewRequirements(b.Requirements); err != nil {
+					return err
+				}
+			}
 		}
 		p.Revision = 1
 		p.RecordedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -259,6 +309,9 @@ func batchPlan(tx *Transaction, b ReviewBatch) (ReviewPlan, error) {
 		if pb.BatchID == b.BatchID {
 			if pb.Base != b.Base || !slices.Equal(pb.TaskIDs, b.TaskIDs) || !reflect.DeepEqual(pb.Requirements, b.Requirements) || pb.PreviousBatchID != b.PreviousBatchID || p.ReportLanguage != b.ReportLanguage {
 				return p, reviewError("batch plan binding")
+			}
+			if pb.TargetCommit != b.TargetCommit {
+				return p, planBatchTargetMismatch(pb.TargetCommit, b.TargetCommit, b.BatchID)
 			}
 			return p, nil
 		}

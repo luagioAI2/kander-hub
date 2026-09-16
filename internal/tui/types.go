@@ -23,6 +23,8 @@ const (
 	spacerRow      = 1
 	panelTopRow    = 2
 	bodyTop        = 3
+	// On a narrow screen the column title row becomes a tab bar of every state.
+	columnStripMaxWidth = 64
 	// Detail panel: the top border, the metadata line, the separator, and only then the body.
 	detailPanelTopRow  = 2
 	detailMetaRow      = 3

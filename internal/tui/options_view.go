@@ -25,10 +25,12 @@ func (p *optionsPanel) frame(title string) popup {
 
 // startForm installs a new form: Init first draws the fields into the viewport, then the natural height is measured.
 // Measuring too early finds an empty viewport, dropping the trailing blanks yields 1, and the following WithHeight(1) cuts the whole page away.
+// Note titles can leave View() empty until Init's follow-up update lands, so a short first measure schedules a retry.
 func (p *optionsPanel) startForm(form *huh.Form) tea.Cmd {
 	p.form = form
 	cmd := form.Init()
 	p.measureForm()
+	p.pendingMeasure = p.formNatural <= 1
 	return cmd
 }
 
@@ -70,31 +72,98 @@ func optionsHeader(left string, width int) string {
 func (p *optionsPanel) view() (popupBox, string) {
 	palette := themePalette(p.app.Theme)
 	screenHeight, screenWidth := p.app.size()
-
 	inner := p.innerWidth()
-	// The title text only comes out of content() below, but it is always a single line, so the frame
-	// can be measured with a stand-in already.
+
+	if p.showScopeTabs() {
+		return p.viewTabFrame(palette, screenWidth, screenHeight, inner)
+	}
+
 	frame := p.frame("title")
-	// When the content does not fit, the options popup may reach the top and bottom edges of the terminal, so the rule modules do not
-	// start scrolling merely because of the popup's outer margin.
 	maxBody := screenHeight - frame.chrome()
 	if maxBody < 3 {
 		maxBody = 3
 	}
-
 	title, body := p.content(palette, inner, maxBody)
 	lines := trimTrailingBlank(strings.Split(body, "\n"))
 	if len(lines) > maxBody {
 		lines = lines[:maxBody]
 	}
 	frame.Title = optionsHeader(title, inner)
-
 	box, bodyBox, out := frame.render(palette, screenWidth, screenHeight, inner, strings.Join(lines, "\n"))
 	p.box = box
 	p.bodyX, p.bodyY = bodyBox.X, bodyBox.Y
 	p.bodyWidth, p.bodyHeight = bodyBox.Width, bodyBox.Height
 	p.bodyLines = lines
+	p.headerX, p.headerY = bodyBox.X, box.Y+1
+	p.tabHits = nil
+	p.tabLabelRow = -1
 	return box, out
+}
+
+// viewTabFrame draws Global/Project as the dialog's own header chrome:
+//
+//	╭──────────────────┬─────────┬─────╮
+//	│ Global - Interface│ Project │ ver │
+//	├──────────────────┴─────────┴─────┤
+//	│ body...                          │
+//	╰──────────────────────────────────╯
+func (p *optionsPanel) viewTabFrame(palette palette, screenWidth, screenHeight, inner int) (popupBox, string) {
+	const frameChrome = tabFrameHeaderRows + 1 // header + bottom border
+	maxBody := screenHeight - frameChrome
+	if maxBody < 3 {
+		maxBody = 3
+	}
+	title, body := p.content(palette, inner, maxBody)
+	lines := trimTrailingBlank(strings.Split(body, "\n"))
+	if len(lines) > maxBody {
+		lines = lines[:maxBody]
+	}
+	bodyHeight := len(lines)
+	if bodyHeight < 1 {
+		bodyHeight = 1
+		lines = []string{""}
+	}
+
+	metrics := p.tabHeaderMetrics(inner, title)
+	top, mid, join := p.renderTabFrameHeader(palette, metrics)
+	edge := styleFor("popup-edge", palette)
+	bottom := edge.Render(borderBottomLeft + strings.Repeat("─", inner) + borderBottomRight)
+
+	rows := make([]string, 0, frameChrome+bodyHeight)
+	rows = append(rows, top, mid, join)
+	for _, line := range lines {
+		rows = append(rows, edge.Render("│")+padLineFill(line, inner, palette)+edge.Render("│"))
+	}
+	rows = append(rows, bottom)
+
+	totalHeight := len(rows)
+	box := centerPopup(screenWidth, screenHeight, inner+2, totalHeight, popupMaxWidth, true)
+	// centerPopup may widen to the popup minimum; rebuild the frame to that width.
+	if resolved := max(1, box.Width-2); resolved != inner {
+		inner = resolved
+		metrics = p.tabHeaderMetrics(inner, title)
+		top, mid, join = p.renderTabFrameHeader(palette, metrics)
+		bottom = edge.Render(borderBottomLeft + strings.Repeat("─", inner) + borderBottomRight)
+		rows = rows[:0]
+		rows = append(rows, top, mid, join)
+		for _, line := range lines {
+			rows = append(rows, edge.Render("│")+padLineFill(line, inner, palette)+edge.Render("│"))
+		}
+		rows = append(rows, bottom)
+		totalHeight = len(rows)
+		box = centerPopup(screenWidth, screenHeight, inner+2, totalHeight, popupMaxWidth, true)
+	}
+
+	out := withDefaultColors(strings.Join(rows, "\n"), palette.ink(palette.Base))
+	p.box = popupBox{X: box.X, Y: box.Y, Width: inner + 2, Height: totalHeight}
+	p.headerX = p.box.X
+	p.headerY = p.box.Y
+	p.bodyX = p.box.X + 1
+	p.bodyY = p.box.Y + tabFrameHeaderRows
+	p.bodyWidth = inner
+	p.bodyHeight = bodyHeight
+	p.bodyLines = lines
+	return p.box, out
 }
 
 func trimTrailingBlank(lines []string) []string {
@@ -117,7 +186,7 @@ func (p *optionsPanel) content(palette palette, width, height int) (string, stri
 			body = 1
 		}
 		p.report.view.Width, p.report.view.Height = width, body
-		hint := styleFor("popup-dim", palette).Render(t("tui.scroll_esc_back"))
+		hint := styleFor("popup-dim", palette).Render(p.reportHintLine(width))
 		return p.report.title, p.report.view.View() + "\n\n" + hint
 	case p.loadErr != "":
 		return t("tui.options_2"), styleFor("popup-warn", palette).Render(p.loadErr)
@@ -132,19 +201,6 @@ func (p *optionsPanel) content(palette palette, width, height int) (string, stri
 		p.measureForm()
 	}
 	p.syncFormTheme(palette)
-	notice, noticeLines := p.renderScopeChrome(palette, width)
-	if !p.confirming && notice == "" && p.overlayNotice != "" {
-		notice = styleFor("popup-dim", palette).Render(clipText(p.overlayNotice, width)) + "\n"
-		noticeLines = 1
-	}
-	p.chromeLines = noticeLines
-	formHeight, footerGap := fitOptionsForm(p.formNatural, height-noticeLines)
-	p.form.WithWidth(width)
-	// Keep Huh's natural height while the content fits. Even when given the same height, WithHeight switches the
-	// Group to a viewport layout, making a page that could be shown in full take part in scrolling.
-	if formHeight < p.formNatural {
-		p.form.WithHeight(formHeight)
-	}
 	title := t("tui.kander_options")
 	switch {
 	case p.confirming:
@@ -156,22 +212,38 @@ func (p *optionsPanel) content(palette palette, width, height int) (string, stri
 	if p.dirty {
 		title += t("tui.unsaved")
 	}
-	hint := styleFor("popup-dim", palette).Render(p.hintLine())
+	notice, noticeLines := p.renderScopeChrome(palette, width)
+	if !p.confirming && p.confirm == nil && notice == "" && p.overlayNotice != "" {
+		indent := scopeChromeIndent
+		innerWidth := width - indent
+		if innerWidth < 1 {
+			indent = 0
+			innerWidth = width
+		}
+		pad := strings.Repeat(" ", indent)
+		notice = pad + styleFor("popup-dim", palette).Render(clipText(p.overlayNotice, innerWidth)) + "\n\n"
+		noticeLines = 2
+	}
+	p.chromeLines = noticeLines
+	formHeight, footerGap := fitOptionsForm(p.formNatural, height-noticeLines)
+	p.form.WithWidth(width)
+	// Keep Huh's natural height while the content fits. Even when given the same height, WithHeight switches the
+	// Group to a viewport layout, making a page that could be shown in full take part in scrolling.
+	if formHeight < p.formNatural {
+		p.form.WithHeight(formHeight)
+	}
+	hint := styleFor("popup-dim", palette).Render(p.hintLine(width))
 	// An unconstrained Huh Group may carry the trailing blanks of an initialized viewport. Trim them before adding the hint,
 	// otherwise those blanks become interior whitespace and the popup cannot hug its actual content.
 	formView := strings.Join(trimTrailingBlank(strings.Split(p.form.View(), "\n")), "\n")
 	return title, notice + formView + footerGap + hint
 }
 
-// fitOptionsForm owns the vertical layout of every section: the blank line before the hint is preserved first,
-// a shortage drops that blank line next, and only if it still does not fit is the Huh viewport shortened and scrolled.
+// fitOptionsForm owns the vertical layout of every section. One blank line is always kept between the form
+// and the bottom hint; when space is short the Huh viewport is shortened and scrolled instead.
 func fitOptionsForm(natural, available int) (height int, footerGap string) {
-	footerHeight := 2
+	const footerHeight = 2
 	footerGap = "\n\n"
-	if natural+footerHeight > available {
-		footerHeight = 1
-		footerGap = "\n"
-	}
 	height = natural
 	if height > available-footerHeight {
 		height = available - footerHeight
@@ -182,22 +254,50 @@ func fitOptionsForm(natural, available int) (height int, footerGap string) {
 	return height, footerGap
 }
 
-// hintLine is the key hint at the bottom of the popup, giving one accurate line for the current page.
-func (p *optionsPanel) hintLine() string {
+func joinHint(page, scope string, width int) string {
+	if scope == "" {
+		return clipText(page, width)
+	}
+	const sep = " · "
+	joined := page + sep + scope
+	if width <= 0 || displayWidth(joined) <= width {
+		return joined
+	}
+	budget := width - displayWidth(scope) - displayWidth(sep)
+	if budget < 8 {
+		return clipText(scope, width)
+	}
+	return clipText(page, budget) + sep + scope
+}
+
+func (p *optionsPanel) reportHintLine(width int) string {
+	page := t("tui.scroll_esc_back")
+	scope := ""
+	if p.viewingFlow() {
+		page = t("tui.flow_scale_scroll_esc")
+		scope = p.scopeTabHint()
+	}
+	return joinHint(page, scope, width)
+}
+
+func (p *optionsPanel) pageHint() string {
 	switch {
-	case p.current == sectionDoctor:
-		return t("tui.choose_enter_confirm_esc_skip_installation")
+	case p.confirm != nil:
+		return confirmHint(confirmReady)
 	case p.confirming:
 		return t("tui.move_enter_confirm_esc_keep_editing")
 	case p.current == "":
-		if p.session != nil && len(p.session.AvailableTargets()) > 1 {
-			return t("tui.move_enter_open_esc_close") + " · " + t("tui.switch_scope_tabs")
-		}
 		return t("tui.move_enter_open_esc_close")
 	case p.current == sectionExecution || p.current == sectionReview:
 		return t("tui.field_change_type_model_ids_enter_save_esc_back")
 	}
 	return t("tui.field_change_enter_save_esc_back")
+}
+
+// hintLine is the key hint at the bottom of the popup, giving one accurate line for the current page.
+// When Global/Project can be switched, that hint is preserved if the line must be clipped.
+func (p *optionsPanel) hintLine(width int) string {
+	return joinHint(p.pageHint(), p.scopeTabHint(), width)
 }
 
 func sectionTitle(section string) string {
@@ -210,6 +310,8 @@ func sectionTitle(section string) string {
 		return t("tui.execution_and_models")
 	case sectionReview:
 		return t("tui.review_and_models")
+	case sectionReviewStages:
+		return t("tui.review_stages")
 	case sectionRules:
 		return t("rules.modules")
 	}
@@ -292,7 +394,14 @@ func optionsMouseActivate(bstate int) bool {
 // HandleMouse gives the popup click-to-focus, double-click confirmation and wheel scrolling.
 // Every focus move is turned into a command handed back to Bubble Tea rather than driving the form synchronously here.
 func (p *optionsPanel) HandleMouse(x, y, bstate int) tea.Cmd {
+	if p.confirm != nil {
+		p.confirm.handleWheel(x, y, bstate, nil, nil)
+		return nil
+	}
 	if p.report != nil {
+		if cmd := p.handleTabMouse(x, y, bstate); cmd != nil {
+			return cmd
+		}
 		delta := mouseWheelDelta(bstate)
 		if delta > 0 {
 			p.report.view.ScrollDown(delta * mouseScrollStep)

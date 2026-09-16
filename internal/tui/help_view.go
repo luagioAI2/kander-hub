@@ -19,7 +19,7 @@ type helpGroup struct {
 	Entries []helpEntry
 }
 
-func boardHelpGroups() []helpGroup {
+func (a *App) boardHelpGroups() []helpGroup {
 	return []helpGroup{
 		{
 			Title: t("tui.board"),
@@ -30,8 +30,9 @@ func boardHelpGroups() []helpGroup {
 				{"Enter", t("tui.task_detail")},
 				{"/", t("tui.search_2")},
 				{"y", t("tui.copy_task_id")},
-				{"g", t("tui.focus_agent_window")},
-				{"s", t("tui.start_task")},
+				{"m", t("actions.menu")},
+				{"g", t("tui.browse_github_issues")},
+				{"c", t("tui.chat_help")},
 				{"- =", t("tui.columns_on_screen")},
 				{"a", t("tui.archived_columns")},
 				{"t", t("tui.cycle_theme")},
@@ -41,15 +42,24 @@ func boardHelpGroups() []helpGroup {
 			},
 		},
 		{
+			Title:   t("tui.issues_overlay"),
+			Entries: a.issuesHelpEntries(),
+		},
+		{
 			Title: t("tui.task_detail_2"),
 			Entries: []helpEntry{
 				{"hjkl ←→↑↓", t("tui.move_cursor")},
+				{"w b e W B E", t("tui.word_motions")},
+				{"0 ^ $", t("tui.line_start_end")},
+				{"{ } %", t("tui.para_match")},
+				{"f F t T ; ,", t("tui.find_char")},
+				{"iw aw i` a\" count", t("tui.text_objects")},
 				{"Ctrl-d Ctrl-u", t("tui.half_page")},
 				{"Ctrl-f Ctrl-b", t("tui.full_page")},
 				{"gg G", t("tui.top_bottom")},
 				{"/ n N", t("tui.search_and_jump")},
-				{"v V", t("tui.char_line_select")},
-				{"y", t("tui.copy_selection")},
+				{"v V o", t("tui.char_line_select")},
+				{"y yy Y", t("tui.copy_selection")},
 				{"q Esc", t("tui.back_to_board")},
 			},
 		},
@@ -65,18 +75,52 @@ func boardHelpGroups() []helpGroup {
 	}
 }
 
+// issuesHelpEntries mirrors the overlay footer: unbound selections advertise
+// import and takeover, bound selections advertise the jump, and an empty
+// selection omits both.
+func (a *App) issuesHelpEntries() []helpEntry {
+	entries := []helpEntry{
+		{"↑↓ jk", t("tui.switch_issue")},
+		{"PgUp PgDn", t("tui.scroll_issue")},
+		{"Enter", t("tui.open_issue_detail")},
+		{"/", t("tui.search_issues")},
+		{"Tab", t("tui.cycle_issue_state")},
+		{"l", t("tui.filter_issues_by_label")},
+	}
+	if a != nil && a.Issues != nil && a.issuesSelectedNumber() > 0 {
+		if card, ok := a.issuesSelectedBound(); ok {
+			if card.State == "done" {
+				entries = append(entries, helpEntry{"s", t("tui.issues_result_help")})
+			}
+			entries = append(entries, helpEntry{"g", t("tui.jump_to_local_card")})
+		} else {
+			entries = append(entries,
+				helpEntry{"i", t("tui.import_issue")},
+				helpEntry{"I", t("tui.import_issue_with_comments")},
+				helpEntry{"s", t("tui.issues_takeover_help")},
+			)
+		}
+	}
+	return append(entries,
+		helpEntry{"r", t("tui.refresh_issues")},
+		helpEntry{"o", t("tui.open_issue_in_browser")},
+		helpEntry{"Esc q", t("tui.back_or_close")},
+	)
+}
+
 // renderHelp draws the help overlay. The keys are laid out in two columns: the board on the left, the detail view and the mouse on the right;
 // on a narrow terminal it falls back to a single vertical column so nothing is truncated by the popup width.
 func (a *App) renderHelp() (popupBox, string) {
 	h, w := a.size()
 	p := themePalette(a.Theme)
-	groups := boardHelpGroups()
-
-	left := renderHelpGroup(p, groups[0])
-	right := renderHelpGroup(p, groups[1])
-	if len(groups) > 2 {
-		right = joinBlocksVertical(p, right, renderHelpGroup(p, groups[2]))
+	groups := a.boardHelpGroups()
+	rendered := make([]string, 0, len(groups))
+	for _, group := range groups {
+		rendered = append(rendered, renderHelpGroup(p, group))
 	}
+
+	left := joinBlocksVertical(p, rendered[0], rendered[1])
+	right := joinBlocksVertical(p, rendered[2], rendered[3])
 	height := blockHeight(left)
 	if got := blockHeight(right); got > height {
 		height = got
@@ -92,11 +136,7 @@ func (a *App) renderHelp() (popupBox, string) {
 		available = 108
 	}
 	if blockWidth(body) > available-4 {
-		blocks := make([]string, 0, len(groups))
-		for _, group := range groups {
-			blocks = append(blocks, renderHelpGroup(p, group))
-		}
-		body = joinBlocksVertical(p, blocks...)
+		body = joinBlocksVertical(p, rendered...)
 	}
 
 	frame := popup{Title: t("tui.key_bindings"), Hint: t("tui.press_any_key_to_close"), MaxWidth: available}

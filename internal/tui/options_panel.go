@@ -15,14 +15,15 @@ import (
 
 // The sections of the options panel. The root form is a Select that opens the matching section form.
 const (
-	sectionInterface = "interface"
-	sectionExecution = "execution"
-	sectionReview    = "review"
-	sectionRules     = "rules"
-	sectionFlow      = "flow"
-	sectionDoctor    = "doctor"
-	sectionSave      = "save"
-	sectionClose     = "close"
+	sectionInterface    = "interface"
+	sectionExecution    = "execution"
+	sectionReview       = "review"
+	sectionReviewStages = "review_stages"
+	sectionRules        = "rules"
+	sectionFlow         = "flow"
+	sectionDoctor       = "doctor"
+	sectionSave         = "save"
+	sectionClose        = "close"
 )
 
 // reportView displays multi-line text such as doctor output and save results.
@@ -52,17 +53,31 @@ type optionsPanel struct {
 	formTheme   *huh.Theme
 	formNatural int
 	formWidth   int
-	section     string
-	current     string
+	// pendingMeasure asks for a second measure after Huh finishes Init; Note
+	// titles can leave the first View() empty until that update lands.
+	pendingMeasure bool
+	section        string
+	current        string
 	// While confirming is true the form is the "confirm before closing" prompt rather than a settings section.
 	confirming  bool
 	closeChoice string
+	// restoreConfirming is the "clear this page's project overrides" prompt.
+	restoreConfirming  bool
+	restoreChoice      string
+	wantRestoreConfirm bool
+	confirm            *confirmDialog
+	confirmKind        int
 	// A non-empty rebuildFocus means the current section must be rebuilt after this update, with focus landing back on that selector.
 	// It records the selector's identifier rather than a line number: a rebuild may change the field count (different agents have
 	// different numbers of model fields), so the line number has to be looked up again in the new form.
 	rebuildFocus string
+	// languageBase is the interface language restored when edits are cancelled; nil while nothing is unsaved.
+	languageBase *languageBaseline
 	bind         *formBinding
 	report       *reportView
+	// flowScale is "large" or "small" while the workflow report is open; empty otherwise.
+	// While it is set, Tab still cycles Global/Project and ←→ cycles this scale.
+	flowScale    string
 	spinner      spinner.Model
 	status       string
 	doctorTools  menu.TerminalTools
@@ -73,7 +88,10 @@ type optionsPanel struct {
 	// overlayNotice is the captured overlay path, used when scope chrome is unavailable.
 	overlayNotice string
 	tabHits       []tabHit
+	tabLabelRow   int
 	chromeLines   int
+	headerX       int
+	headerY       int
 
 	// The geometry and body lines of the most recent render, for mouse hit testing.
 	box        popupBox
@@ -188,17 +206,48 @@ type doctorResult struct {
 
 // applyWork consumes the result of a background task; the Bubble Tea shell calls it on a workMsg.
 func (a *App) applyWork(payload any) tea.Cmd {
-	if result, ok := payload.(startPreviewResult); ok {
-		a.applyStartPreview(result)
+	switch result := payload.(type) {
+	case boardReadResult:
+		a.applyBoardRead(result)
 		return nil
-	}
-	if result, ok := payload.(startResult); ok {
-		a.applyStartResult(result)
+	case detailReadResult:
+		a.applyDetailRead(result)
+		return nil
+	case taskActionsLoaded:
+		a.applyTaskActionsLoaded(result)
+		return nil
+	case taskActionResult:
+		a.applyTaskActionResult(result)
+		return nil
+	case chatPreviewResult:
+		a.applyChatPreview(result)
+		return nil
+	case chatStartResult:
+		a.applyChatStart(result)
+		return nil
+	case confirmWork:
+		a.applyConfirmWork(result)
 		return nil
 	}
 	if result, ok := payload.(focusResult); ok {
 		a.focusRunning = false
 		a.showFocusNotice(result.message)
+		return nil
+	}
+	if result, ok := payload.(issuesListResult); ok {
+		a.applyIssuesList(result)
+		return nil
+	}
+	if result, ok := payload.(issuesDetailResult); ok {
+		a.applyIssuesDetail(result)
+		return nil
+	}
+	if result, ok := payload.(issuesImportResult); ok {
+		a.applyIssuesImport(result)
+		return nil
+	}
+	if result, ok := payload.(issuesIndexResult); ok {
+		a.applyIssuesIndex(result)
 		return nil
 	}
 	panel := a.Options
@@ -219,6 +268,9 @@ func (a *App) applyWork(payload any) tea.Cmd {
 		}
 		a.Session = result.session
 		panel.session = result.session
+		// Prefer the Project tab when an overlay already has settings; an invalid
+		// overlay merge stays on Global so Options can still open.
+		_ = panel.session.PreferProjectTabIfPresent()
 		panel.loadedTUI = result.session.Config.TUI
 		panel.appliedTUI = nil
 		if result.language != "" {
@@ -254,7 +306,12 @@ func (a *App) applyWork(payload any) tea.Cmd {
 	return nil
 }
 
+// close leaves the panel without saving, so unsaved interface language edits are cancelled first.
 func (p *optionsPanel) close() {
+	if err := p.restoreLanguage(); err != nil {
+		p.showReport(t("tui.load_failed"), nil, err.Error())
+		return
+	}
 	p.app.Options = nil
 }
 
@@ -319,8 +376,12 @@ func reportTag(level string) string {
 	return "popup"
 }
 
-// Update is the input entry point of the panel: the report first, then the current Huh form.
+// Update is the input entry point of the panel: the shared confirmation first,
+// then the report, then the current Huh form.
 func (p *optionsPanel) Update(msg tea.Msg) tea.Cmd {
+	if p.confirm != nil {
+		return p.updateConfirm(msg)
+	}
 	if tick, ok := msg.(spinner.TickMsg); ok {
 		if p.form != nil || p.loadErr != "" {
 			return nil
@@ -332,15 +393,22 @@ func (p *optionsPanel) Update(msg tea.Msg) tea.Cmd {
 	if p.report != nil {
 		return p.updateReport(msg)
 	}
-	if event, ok := msg.(tea.KeyMsg); ok && p.form != nil && !p.acceptsText() {
-		switch mapKey(event) {
-		case "q", "Q", "o", "O":
-			// Consistent with the rest of the board: q closes, and pressing o again closes too.
-			return p.requestClose()
-		case "[":
-			return p.cycleTab(-1)
-		case "]":
-			return p.cycleTab(1)
+	if event, ok := msg.(tea.KeyMsg); ok && p.form != nil {
+		key := mapKey(event)
+		if p.canCycleTabs() {
+			switch key {
+			case "tab":
+				return p.cycleTab(1)
+			case "shift-tab":
+				return p.cycleTab(-1)
+			}
+		}
+		if !p.acceptsText() {
+			switch key {
+			case "q", "Q", "o", "O":
+				// Consistent with the rest of the board: q closes, and pressing o again closes too.
+				return p.requestClose()
+			}
 		}
 	}
 	if p.form == nil {
@@ -358,8 +426,27 @@ func (p *optionsPanel) Update(msg tea.Msg) tea.Cmd {
 func (p *optionsPanel) updateReport(msg tea.Msg) tea.Cmd {
 	if key, ok := msg.(tea.KeyMsg); ok {
 		switch mapKey(key) {
+		case "tab":
+			if p.viewingFlow() {
+				return p.cycleTab(1)
+			}
+		case "shift-tab":
+			if p.viewingFlow() {
+				return p.cycleTab(-1)
+			}
+		case "left":
+			if p.viewingFlow() {
+				p.cycleFlowScale(-1)
+				return nil
+			}
+		case "right":
+			if p.viewingFlow() {
+				p.cycleFlowScale(1)
+				return nil
+			}
 		case "esc", "q", "Q", "enter", "backspace":
 			p.report = nil
+			p.flowScale = ""
 			if p.form == nil && p.session != nil {
 				return p.openRoot()
 			}
@@ -452,6 +539,10 @@ func (p *optionsPanel) updateForm(msg tea.Msg) tea.Cmd {
 		if p.bind != nil {
 			p.bind.apply(p)
 		}
+		if p.wantRestoreConfirm {
+			p.wantRestoreConfirm = false
+			return p.openRestoreConfirm()
+		}
 		if p.confirming {
 			return p.finishCloseConfirm()
 		}
@@ -461,19 +552,35 @@ func (p *optionsPanel) updateForm(msg tea.Msg) tea.Cmd {
 	if form, ok := model.(*huh.Form); ok {
 		p.form = form
 	}
+	if p.pendingMeasure {
+		p.pendingMeasure = false
+		p.measureForm()
+	}
 	// Bound values are written back as the cursor moves, which is what lets UI preferences such as the theme preview while being selected.
 	if p.bind != nil {
 		p.bind.apply(p)
 	}
+	if p.wantRestoreConfirm {
+		p.wantRestoreConfirm = false
+		return tea.Batch(cmd, p.openRestoreConfirm())
+	}
 	if p.rebuildFocus != "" {
-		return tea.Batch(cmd, p.rebuildSection())
+		// Drop cmds from the old form: a pending NextField applied to the rebuilt form
+		// would stack with focus restore and walk past the last field, completing the page.
+		return p.rebuildSection()
 	}
 	switch p.form.State {
 	case huh.StateCompleted:
 		if p.confirming {
 			return p.finishCloseConfirm()
 		}
-		return tea.Batch(cmd, p.finishSection())
+		// Settings pages submit only through the Enter interceptor above. Huh also
+		// completes when NextField moves past the last field (Down into a trailing
+		// skipped note, focus-restore overshoot, etc.); keep the user on this page.
+		if p.current == "" {
+			return tea.Batch(cmd, p.openRoot())
+		}
+		return tea.Batch(cmd, p.openSection(p.current))
 	case huh.StateAborted:
 		if p.confirming {
 			p.confirming = false
@@ -501,9 +608,6 @@ func (p *optionsPanel) finishCloseConfirm() tea.Cmd {
 // Ordinary values were already written back in apply; interface / task execution / review / rules reach disk on submit,
 // so there is no need to return to the root menu and pick "save and apply".
 func (p *optionsPanel) finishSection() tea.Cmd {
-	if p.current == sectionDoctor {
-		return p.finishHerdrInstall()
-	}
 	if p.current == "" {
 		return p.dispatch(p.section)
 	}
@@ -511,7 +615,9 @@ func (p *optionsPanel) finishSection() tea.Cmd {
 		p.bind.commitSideEffects(p)
 	}
 	if p.savesOnSubmit() {
-		if err := p.persistNow(); err != nil {
+		err := p.persistNow()
+		p.advanceLanguageBaseline()
+		if err != nil {
 			p.showReport(t("tui.save_failed"), nil, err.Error())
 			return nil
 		}
@@ -521,7 +627,7 @@ func (p *optionsPanel) finishSection() tea.Cmd {
 }
 
 func (p *optionsPanel) savesOnSubmit() bool {
-	return p.current == sectionInterface || p.current == sectionExecution || p.current == sectionReview || p.current == sectionRules
+	return p.current == sectionInterface || p.current == sectionExecution || p.current == sectionReview || p.current == sectionReviewStages || p.current == sectionRules
 }
 
 // persistNow writes the current session to the config file, UI preferences included.
@@ -547,14 +653,16 @@ func (p *optionsPanel) persistNow() error {
 
 // abortSection handles Esc: a section returns to the root menu, the root menu closes the panel.
 // Changed values are kept (apply wrote them back long ago); only side effects that need confirmation are skipped.
+// The interface language is the exception: leaving the interface page with Esc cancels its unsaved change.
 func (p *optionsPanel) abortSection() tea.Cmd {
-	if p.current == sectionDoctor {
-		p.installHerdr = false
-		return p.finishHerdrInstall()
-	}
 	if p.current == "" {
 		p.close()
 		return nil
+	}
+	if p.current == sectionInterface {
+		if err := p.restoreLanguage(); err != nil {
+			p.showReport(t("tui.load_failed"), nil, err.Error())
+		}
 	}
 	p.current = ""
 	return p.openRoot()
@@ -597,6 +705,7 @@ func (p *optionsPanel) save() {
 		return
 	}
 	path, err := p.session.SaveAllDirty()
+	p.advanceLanguageBaseline()
 	if err != nil {
 		p.showReport(t("tui.save_failed"), finishLines, err.Error())
 		return

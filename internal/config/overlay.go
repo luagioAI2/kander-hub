@@ -20,6 +20,7 @@ var overlayForbiddenKeys = map[string]struct{}{
 var overlayAllowedKeys = map[string]struct{}{
 	"kanban_agent":   {},
 	"kanban_agents":  {},
+	"chat_agent":     {},
 	"launcher":       {},
 	"reviewers":      {},
 	"review_stages":  {},
@@ -258,9 +259,19 @@ func mergeOverlayRaw(scope map[string]any, overlay map[string]any) (map[string]a
 	if err := normalizeReviewStagesField(scope); err != nil {
 		return nil, err
 	}
+	if err := normalizeReviewersField(scope); err != nil {
+		return nil, err
+	}
 	overlayCopy := cloneRawObjectDeep(overlay)
 	if err := normalizeReviewStagesField(overlayCopy); err != nil {
 		return nil, err
 	}
-	return deepMerge(scope, overlayCopy), nil
+	if err := normalizeReviewersField(overlayCopy); err != nil {
+		return nil, err
+	}
+	FoldLegacyReviewRoleKeys(scope)
+	FoldLegacyReviewRoleKeys(overlayCopy)
+	merged := deepMerge(scope, overlayCopy)
+	mergeReviewModelOwners(scope, overlayCopy, merged)
+	return merged, nil
 }

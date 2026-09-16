@@ -244,9 +244,13 @@ func PrepareReviewRun(root string, input ReviewInput, requirements map[string]st
 			return e
 		}
 		if ok && batch.PlanID != "" {
-			p, e := batchPlan(tx, batch)
+			var p ReviewPlan
+			found, e := readReviewJSON(tx, planName(batch.PlanID), &p)
 			if e != nil {
 				return e
+			}
+			if !found || p.PlanID != batch.PlanID {
+				return reviewError("batch review plan required")
 			}
 			scopeIDs = p.TaskIDs
 		}
@@ -310,15 +314,11 @@ func PrepareReviewRun(root string, input ReviewInput, requirements map[string]st
 			if advance != nil || len(requirements) == 0 {
 				return reviewError("new batch requires requirements; no advance")
 			}
-			for role, requirement := range requirements {
-				if !reviewRole(role) || requirement != "required" && (!strings.HasPrefix(requirement, "N/A: ") || strings.TrimSpace(strings.TrimPrefix(requirement, "N/A: ")) == "") {
-					return reviewError("requirements")
-				}
+			if err := validateRequirements(requirements); err != nil {
+				return err
 			}
-			for _, role := range []string{"PM", "QA", "CSA", "Hacker"} {
-				if strings.TrimSpace(requirements[role]) == "" {
-					return reviewError("missing requirement: " + role)
-				}
+			if err := validateNewRequirements(requirements); err != nil {
+				return err
 			}
 			batch = ReviewBatch{TaskContextHash: input.InputHashes["task-context.md"], Schema: 1, BatchID: input.BatchID, TaskIDs: input.TaskIDs, Base: input.Base, TargetCommit: input.Commit, ReportLanguage: language, Requirements: requirements, Revision: 1}
 		} else {
@@ -327,6 +327,16 @@ func PrepareReviewRun(root string, input ReviewInput, requirements map[string]st
 			}
 			if batch.Schema != 1 || batch.TaskContextHash != input.InputHashes["task-context.md"] || batch.Base != input.Base || !reflect.DeepEqual(batch.TaskIDs, input.TaskIDs) || batch.ReportLanguage != language || len(requirements) > 0 && !reflect.DeepEqual(requirements, batch.Requirements) {
 				return reviewError("batch binding conflict")
+			}
+			if batch.PlanID != "" {
+				if p, e := batchPlan(tx, batch); e != nil {
+					return e
+				} else if p.CWD != input.CWD {
+					return reviewError("run/plan worktree mismatch")
+				}
+				if e := validatePreviousClosure(tx, batch); e != nil {
+					return e
+				}
 			}
 			if batch.TargetCommit != input.Commit {
 				if advance == nil || advance.PreviousTarget != batch.TargetCommit || advance.Target != input.Commit || strings.TrimSpace(advance.Reason) == "" || len(advance.Deliveries) == 0 {
@@ -343,6 +353,12 @@ func PrepareReviewRun(root string, input ReviewInput, requirements map[string]st
 				batch.Advances = append(batch.Advances, *advance)
 				batch.TargetCommit = input.Commit
 				batch.Revision++
+				if e = syncPlannedBatchTarget(tx, batch, reviewPlanTargetSyncRequest{
+					Kind:           "advance-file",
+					PreviousTarget: advance.PreviousTarget,
+				}); e != nil {
+					return e
+				}
 			} else if advance != nil {
 				return reviewError("redundant batch advance")
 			}
@@ -352,16 +368,6 @@ func PrepareReviewRun(root string, input ReviewInput, requirements map[string]st
 			return e
 		} else if ok {
 			return reviewError("batch already closed")
-		}
-		if batch.PlanID != "" {
-			if p, e := batchPlan(tx, batch); e != nil {
-				return e
-			} else if p.CWD != input.CWD {
-				return reviewError("run/plan worktree mismatch")
-			}
-			if e := validatePreviousClosure(tx, batch); e != nil {
-				return e
-			}
 		}
 		if batch.Requirements[input.Role] != "required" {
 			return reviewError("role is not required")
@@ -415,7 +421,7 @@ func PrepareReviewRun(root string, input ReviewInput, requirements map[string]st
 	return
 }
 func reviewRole(role string) bool {
-	return role == "PM" || role == "QA" || role == "CSA" || role == "Hacker"
+	return role == "PM" || role == "QA" || role == "CSA" || role == "Hacker" || role == "PMQA" || role == "Security"
 }
 func allPublished(run ReviewRun) bool {
 	for _, id := range run.TaskIDs {
@@ -455,7 +461,7 @@ func UpdateReviewRun(root string, run ReviewRun) error {
 // StoreReviewArtifact snapshots generated prompts before launch, without giving
 // the reviewer a board transaction or write access through a Kander command.
 func StoreReviewArtifact(root, runID, name string, data []byte) error {
-	if !ValidReviewID(runID) || (name != "prompt.txt" && name != "evidence.txt") {
+	if !ValidReviewID(runID) || (name != "prompt.txt" && name != "review-contract.md" && name != "evidence.txt") {
 		return reviewError("artifact")
 	}
 	return WithTransaction(root, reviewScope(nil, false), func(tx *Transaction) error {
@@ -548,7 +554,7 @@ func FinalizeReviewRun(root string, run ReviewRun, report []byte) (ReviewRun, er
 }
 func reviewOriginals(tx *Transaction, id string, final bool) (map[string][]byte, error) {
 	result := map[string][]byte{}
-	names := map[string]string{"task-context.md": "inputs", "review-context.md": "inputs", "prompt.txt": "inputs", "evidence.txt": "inputs", "output.raw": "staging", "stdout.log": "staging", "error.log": "staging"}
+	names := map[string]string{"task-context.md": "inputs", "review-context.md": "inputs", "prompt.txt": "inputs", "review-contract.md": "inputs", "evidence.txt": "inputs", "output.raw": "staging", "stdout.log": "staging", "error.log": "staging"}
 	if final {
 		names["report.md"] = "originals"
 	}

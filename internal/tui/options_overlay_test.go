@@ -2,22 +2,47 @@ package tui
 
 import (
 	"encoding/json"
-	"github.com/charmbracelet/huh"
 	"os"
 	"path/filepath"
-	"reflect"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/ansi"
 
 	"github.com/dualface/kander/internal/config"
 	"github.com/dualface/kander/internal/menu"
+	"github.com/dualface/kander/internal/version"
 )
 
 func uiText(id string) string {
 	return t(id)
+}
+
+func hasInheritedMarker(plain string) bool {
+	return strings.Contains(plain, "(inherited ") ||
+		strings.Contains(plain, "(继承 ") ||
+		strings.Contains(plain, "(継承 ")
+}
+
+// confirmPageRestore selects the page-level restore control and confirms clearing.
+func confirmPageRestore(t *testing.T, panel *optionsPanel) {
+	t.Helper()
+	if panel.bind == nil || panel.bind.restoreFlag == nil {
+		t.Fatal("missing page restore control")
+	}
+	*panel.bind.restoreFlag = true
+	panel.bind.apply(panel)
+	if !panel.wantRestoreConfirm {
+		t.Fatal("restore did not request confirmation")
+	}
+	panel.wantRestoreConfirm = false
+	pumpPanel(panel, panel.openRestoreConfirm())
+	if panel.confirm == nil {
+		t.Fatal("restore did not open the shared dialog")
+	}
+	drivePanel(panel, keyMsg("y"))
 }
 
 func attachTempOverlay(t *testing.T, session *menu.Session, mode config.Mode) (string, string) {
@@ -30,6 +55,39 @@ func attachTempOverlay(t *testing.T, session *menu.Session, mode config.Mode) (s
 	return dir, path
 }
 
+func TestPadTabLabelRight(t *testing.T) {
+	if got := padTabLabelRight("dev", 10); got != "      dev " {
+		t.Fatalf("wide=%q", got)
+	}
+	if got := padTabLabelRight("dev", 5); got != " dev " {
+		t.Fatalf("tight=%q", got)
+	}
+	if got := padTabLabelRight("dev", 2); displayWidth(got) != 2 {
+		t.Fatalf("narrow=%q width=%d", got, displayWidth(got))
+	}
+}
+
+func TestOptionsTabHeaderVersionIsRightAligned(t *testing.T) {
+	_, panel := openPanel(t)
+	attachTempOverlay(t, panel.session, config.ModeGlobal)
+	pumpPanel(panel, panel.openRoot())
+	_, view := panel.view()
+	lines := strings.Split(ansi.Strip(view), "\n")
+	if len(lines) < 2 {
+		t.Fatal("missing header row")
+	}
+	row := lines[1]
+	ver := version.String()
+	idx := strings.LastIndex(row, ver)
+	if idx < 0 {
+		t.Fatalf("missing version %q in %q", ver, row)
+	}
+	after := strings.TrimSpace(row[idx+len(ver):])
+	if after != "│" {
+		t.Fatalf("version not right-aligned in header: %q", row)
+	}
+}
+
 func TestOptionsTabsFollowInstallMode(t *testing.T) {
 	_, panel := openPanel(t)
 	attachTempOverlay(t, panel.session, config.ModeGlobal)
@@ -39,8 +97,51 @@ func TestOptionsTabsFollowInstallMode(t *testing.T) {
 	if !strings.Contains(plain, uiText("tui.tab_global")) || !strings.Contains(plain, uiText("tui.tab_project")) {
 		t.Fatalf("global install should show both tabs:\n%s", plain)
 	}
-	if !strings.Contains(plain, config.OverlayFilename) && !strings.Contains(plain, ".kander-config") {
-		t.Fatalf("missing overlay path:\n%s", plain)
+	activeRoot := uiText("tui.tab_global") + " - " + uiText("tui.kander_options")
+	if !strings.Contains(plain, activeRoot) {
+		t.Fatalf("active global tab should include the page name:\n%s", plain)
+	}
+	if strings.Contains(plain, uiText("tui.tab_project")+" - ") {
+		t.Fatalf("inactive project tab should not include the page name:\n%s", plain)
+	}
+	if !strings.Contains(plain, "╭") || !strings.Contains(plain, "┬") || !strings.Contains(plain, "╮") {
+		t.Fatalf("tabs should use a rounded boxed header:\n%s", plain)
+	}
+	basePath := panel.session.BasePath
+	if basePath == "" {
+		t.Fatal("missing session base path")
+	}
+	if !strings.Contains(plain, basePath) && !strings.Contains(plain, filepath.Base(basePath)) {
+		t.Fatalf("global tab should show the base config path:\n%s", plain)
+	}
+	if strings.Contains(plain, config.OverlayFilename) {
+		t.Fatalf("global tab should hide the overlay path:\n%s", plain)
+	}
+
+	pumpPanel(panel, panel.dispatch(sectionInterface))
+	_, view = panel.view()
+	plain = ansi.Strip(view)
+	activeInterface := uiText("tui.tab_global") + " - " + uiText("tui.interface")
+	if !strings.Contains(plain, activeInterface) {
+		t.Fatalf("active global tab should follow the open section:\n%s", plain)
+	}
+
+	pumpPanel(panel, panel.switchTab(config.TargetOverlay))
+	_, view = panel.view()
+	plain = ansi.Strip(view)
+	activeProject := uiText("tui.tab_project") + " - " + uiText("tui.interface")
+	if !strings.Contains(plain, activeProject) {
+		t.Fatalf("active project tab should include the page name:\n%s", plain)
+	}
+	if strings.Contains(plain, uiText("tui.tab_global")+" - ") {
+		t.Fatalf("inactive global tab should not include the page name:\n%s", plain)
+	}
+	missing := config.Text("tui.overlay_missing")
+	if !strings.Contains(plain, missing) {
+		t.Fatalf("project tab should show the missing overlay placeholder:\n%s", plain)
+	}
+	if strings.Contains(plain, config.OverlayFilename) {
+		t.Fatalf("missing overlay should not show the filename:\n%s", plain)
 	}
 
 	_, panel = openPanel(t)
@@ -51,11 +152,6 @@ func TestOptionsTabsFollowInstallMode(t *testing.T) {
 	if strings.Contains(plain, uiText("tui.tab_global")) && strings.Contains(plain, uiText("tui.tab_project")) {
 		t.Fatalf("project install should hide the tab bar:\n%s", plain)
 	}
-	if !strings.Contains(plain, uiText("tui.tab_project")) && !strings.Contains(plain, filepath.Base(config.OverlayFilename)) {
-		if !strings.Contains(plain, config.OverlayFilename) {
-			t.Fatalf("project tab should still show the overlay path:\n%s", plain)
-		}
-	}
 }
 
 func TestOptionsTabSwitchKeepsEditsAndDoesNotSave(t *testing.T) {
@@ -64,7 +160,7 @@ func TestOptionsTabSwitchKeepsEditsAndDoesNotSave(t *testing.T) {
 	pumpPanel(panel, panel.openRoot())
 	panel.session.SetLauncher("foreground")
 	panel.markDirty()
-	drivePanel(panel, keyMsg("]"))
+	drivePanel(panel, keyMsg("tab"))
 	if panel.session.Target != config.TargetOverlay {
 		t.Fatalf("target=%s", panel.session.Target)
 	}
@@ -72,7 +168,7 @@ func TestOptionsTabSwitchKeepsEditsAndDoesNotSave(t *testing.T) {
 		t.Fatal("tab switch created an overlay")
 	}
 	panel.session.SetLauncher("herdr")
-	drivePanel(panel, keyMsg("["))
+	drivePanel(panel, keyMsg("shift-tab"))
 	if panel.session.Target != config.TargetScope {
 		t.Fatalf("target=%s", panel.session.Target)
 	}
@@ -142,7 +238,7 @@ func TestInheritedPrefixOnProjectTab(t *testing.T) {
 	pumpPanel(panel, panel.dispatch(sectionInterface))
 	_, view := panel.view()
 	plain := ansi.Strip(view)
-	if !strings.Contains(plain, uiText("tui.inherit_global")) {
+	if !hasInheritedMarker(plain) {
 		t.Fatalf("missing inherit prefix:\n%s", plain)
 	}
 }
@@ -153,8 +249,34 @@ func TestProjectInstallInheritPrefixUsesDefault(t *testing.T) {
 	pumpPanel(panel, panel.dispatch(sectionInterface))
 	_, view := panel.view()
 	plain := ansi.Strip(view)
-	if !strings.Contains(plain, uiText("tui.inherit_default")) {
-		t.Fatalf("missing default prefix:\n%s", plain)
+	if !hasInheritedMarker(plain) {
+		t.Fatalf("missing inherit prefix:\n%s", plain)
+	}
+}
+
+func TestModelInputShowsInheritedValue(t *testing.T) {
+	_, panel := openPanel(t)
+	attachTempOverlay(t, panel.session, config.ModeGlobal)
+	if err := panel.session.SetTarget(config.TargetOverlay); err != nil {
+		t.Fatal(err)
+	}
+	pumpPanel(panel, panel.dispatch(sectionExecution))
+	field := panel.bind.modelFields[0]
+	path := modelOverlayPath(field)
+	if panel.session.FieldOverridden(path...) {
+		t.Fatal("model already overridden")
+	}
+	want := panel.session.FormatInherited(field.Value())
+	if got := *panel.bind.modelValues[0]; got != want {
+		t.Fatalf("input=%q want %q", got, want)
+	}
+	title := optionTitle(modelIndent + field.Short)
+	if hasInheritedMarker(title) {
+		t.Fatalf("input label should stay plain: %q", title)
+	}
+	view := ansi.Strip(panel.bind.modelInputs[field.Key()].input.View())
+	if !strings.Contains(view, want) {
+		t.Fatalf("input view missing %q:\n%s", want, view)
 	}
 }
 
@@ -192,8 +314,12 @@ func TestScopeChromeFitsNarrowScreen(t *testing.T) {
 	pumpPanel(panel, panel.openRoot())
 	_, view := panel.view()
 	plain := ansi.Strip(view)
-	if !strings.Contains(plain, config.OverlayFilename) {
-		t.Fatalf("narrow view dropped overlay path:\n%s", plain)
+	if panel.session.OverlayLocation.ProjectRoot == "" {
+		t.Fatal("missing project root")
+	}
+	if !strings.Contains(plain, filepath.Base(panel.session.OverlayLocation.ProjectRoot)) &&
+		!strings.Contains(plain, panel.session.OverlayLocation.ProjectRoot) {
+		t.Fatalf("narrow view dropped project path:\n%s", plain)
 	}
 }
 
@@ -346,6 +472,34 @@ func TestProjectLauncherChangeRefreshesInherit(t *testing.T) {
 	}
 }
 
+func TestModelEditPinsAgentOnProjectTab(t *testing.T) {
+	_, panel := openPanel(t)
+	attachTempOverlay(t, panel.session, config.ModeGlobal)
+	if err := panel.session.SetTarget(config.TargetOverlay); err != nil {
+		t.Fatal(err)
+	}
+	pumpPanel(panel, panel.openSection(sectionExecution))
+	if panel.session.FieldOverridden("kanban_agents", "large") {
+		t.Fatal("agent already overridden")
+	}
+	field := panel.bind.modelFields[0]
+	*panel.bind.modelValues[0] = "project-model"
+	panel.bind.modelInputs[field.Key()].input.Value(panel.bind.modelValues[0])
+	panel.bind.apply(panel)
+	pumpPanel(panel, panel.rebuildSection())
+	if !panel.session.FieldOverridden("kanban_agents", "large") {
+		t.Fatal("model edit did not pin kanban_agents.large")
+	}
+	_, view := panel.view()
+	plain := ansi.Strip(view)
+	largeTitle := optionTitle(uiText("tui.titles.large"))
+	for _, line := range strings.Split(plain, "\n") {
+		if strings.Contains(line, largeTitle) && hasInheritedMarker(line) {
+			t.Fatalf("large agent still looks inherited:\n%s", line)
+		}
+	}
+}
+
 func TestModelOverrideRefreshKeepsCursorAndRestore(t *testing.T) {
 	_, panel := openPanel(t)
 	attachTempOverlay(t, panel.session, config.ModeGlobal)
@@ -355,36 +509,29 @@ func TestModelOverrideRefreshKeepsCursorAndRestore(t *testing.T) {
 	pumpPanel(panel, panel.openSection(sectionExecution))
 	field := panel.bind.modelFields[0]
 	input := panel.bind.modelInputs[field.Key()]
-	before := *input.value
+	if !strings.HasPrefix(*input.value, "(") {
+		t.Fatalf("setup: want inherited input, got %q", *input.value)
+	}
 	pumpPanel(panel, repeatCmd(panel.bind.fieldIndex[modelFocusKey(field)], huh.NextField))
-	drivePanel(panel, tea.KeyMsg{Type: tea.KeyHome})
+	// Replace the inherited marker with a concrete override.
+	*panel.bind.modelValues[0] = ""
+	panel.bind.modelInputs[field.Key()].input.Value(panel.bind.modelValues[0])
 	drivePanel(panel, keyMsg("x"))
 	drivePanel(panel, keyMsg("y"))
-	if got := *panel.bind.modelValues[0]; got != "xy"+before {
+	if got := *panel.bind.modelValues[0]; got != "xy" {
 		t.Fatalf("cursor or text lost: %q", got)
 	}
-	if got := panel.session.Config.Models.Kanban[field.Agent][field.FieldName()]; got != "xy"+before {
+	if got := panel.session.Config.Models.Kanban[field.Agent][field.FieldName()]; got != "xy" {
 		t.Fatalf("effective model did not follow input: %q", got)
 	}
 	if panel.bind.modelInputs[field.Key()].input != input.input {
 		t.Fatal("input replaced")
 	}
 	view := ansi.Strip(input.input.View())
-	if strings.Contains(view, panel.session.FormatInherited(before)) {
+	if hasInheritedMarker(view) {
 		t.Fatalf("stale inheritance: %s", view)
 	}
-	found := false
-	for _, item := range panel.bind.restores {
-		if reflect.DeepEqual(item.path, modelOverlayPath(field)) {
-			found = true
-			*item.flag = true
-		}
-	}
-	if !found {
-		t.Fatal("restore control missing")
-	}
-	panel.bind.apply(panel)
-	pumpPanel(panel, panel.rebuildSection())
+	confirmPageRestore(t, panel)
 	if panel.session.FieldOverridden(modelOverlayPath(field)...) {
 		t.Fatal("restore did not remove model override")
 	}
@@ -405,6 +552,45 @@ func TestSwitchTabSyncsAppFromSession(t *testing.T) {
 	if app.Theme != inherited {
 		t.Fatalf("global tab kept overlay theme %s, want %s", app.Theme, inherited)
 	}
+}
+
+func TestSwitchTabKeepsFocusedField(t *testing.T) {
+	_, panel := openPanel(t)
+	attachTempOverlay(t, panel.session, config.ModeGlobal)
+	pumpPanel(panel, panel.openSection(sectionInterface))
+	agentIndex := panel.bind.fieldIndex[interfaceFocusKey("agent_language")]
+	if agentIndex < 1 {
+		t.Fatalf("agent language index=%d", agentIndex)
+	}
+	pumpPanel(panel, repeatCmd(agentIndex, huh.NextField))
+	if panel.form.GetFocusedField() != focusableFieldAt(panel.bind, agentIndex) {
+		t.Fatal("setup: focus not on agent language")
+	}
+	for _, target := range []string{config.TargetOverlay, config.TargetScope, config.TargetOverlay} {
+		pumpPanel(panel, panel.switchTab(target))
+		if panel.session.Target != target {
+			t.Fatalf("target=%s want %s", panel.session.Target, target)
+		}
+		wantIndex := panel.bind.fieldIndex[interfaceFocusKey("agent_language")]
+		if panel.form.GetFocusedField() != focusableFieldAt(panel.bind, wantIndex) {
+			key, index := panel.currentFocus()
+			t.Fatalf("after switch to %s focus key=%q index=%d, want agent language at %d", target, key, index, wantIndex)
+		}
+	}
+}
+
+func focusableFieldAt(bind *formBinding, index int) huh.Field {
+	i := 0
+	for _, field := range bind.formFields {
+		if field.Skip() {
+			continue
+		}
+		if i == index {
+			return field
+		}
+		i++
+	}
+	return nil
 }
 
 func TestAppUpdateRoutesOptionsClick(t *testing.T) {
@@ -505,5 +691,133 @@ func TestInvalidProjectInterfaceEditReportsAndKeepsInput(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatal("invalid candidate created overlay")
+	}
+}
+
+func scopeSwitchHint() string {
+	return t("tui.switch_scope_tabs")
+}
+
+func TestOptionsTabKeyCyclesScope(t *testing.T) {
+	_, panel := openPanel(t)
+	attachTempOverlay(t, panel.session, config.ModeGlobal)
+	pumpPanel(panel, panel.openRoot())
+	drivePanel(panel, keyMsg("tab"))
+	if panel.session.Target != config.TargetOverlay {
+		t.Fatalf("tab target=%s", panel.session.Target)
+	}
+	drivePanel(panel, keyMsg("shift-tab"))
+	if panel.session.Target != config.TargetScope {
+		t.Fatalf("shift-tab target=%s", panel.session.Target)
+	}
+	for _, key := range []string{"]", "["} {
+		drivePanel(panel, keyMsg(key))
+		if panel.session.Target != config.TargetScope {
+			t.Fatalf("%s must not switch scope, target=%s", key, panel.session.Target)
+		}
+	}
+}
+
+func TestOptionsHintShowsAvailableTabsAndKeys(t *testing.T) {
+	want := scopeSwitchHint()
+	_, panel := openPanel(t)
+	attachTempOverlay(t, panel.session, config.ModeGlobal)
+	pumpPanel(panel, panel.openRoot())
+	_, view := panel.view()
+	if !strings.Contains(ansi.Strip(view), want) {
+		t.Fatalf("root hint missing %q:\n%s", want, ansi.Strip(view))
+	}
+	pumpPanel(panel, panel.openSection(sectionInterface))
+	_, view = panel.view()
+	if !strings.Contains(ansi.Strip(view), want) {
+		t.Fatalf("section hint missing %q:\n%s", want, ansi.Strip(view))
+	}
+	pumpPanel(panel, panel.openSection(sectionExecution))
+	_, view = panel.view()
+	if !strings.Contains(ansi.Strip(view), want) {
+		t.Fatalf("execution hint missing %q:\n%s", want, ansi.Strip(view))
+	}
+}
+
+func TestOptionsHintOmitsTabSwitchWhenUnavailable(t *testing.T) {
+	// The scope hint is appended after the page hint, so match it with its separator.
+	keys := " · " + scopeSwitchHint()
+	_, panel := openPanel(t)
+	attachTempOverlay(t, panel.session, config.ModeProject)
+	pumpPanel(panel, panel.openRoot())
+	if strings.Contains(ansi.Strip(panelView(panel)), keys) {
+		t.Fatalf("project install showed tab switch:\n%s", ansi.Strip(panelView(panel)))
+	}
+
+	_, panel = openPanel(t)
+	attachTempOverlay(t, panel.session, config.ModeGlobal)
+	panel.markDirty()
+	pumpPanel(panel, panel.openCloseConfirm())
+	if strings.Contains(ansi.Strip(panelView(panel)), keys) {
+		t.Fatalf("confirm showed tab switch:\n%s", ansi.Strip(panelView(panel)))
+	}
+	drivePanel(panel, keyMsg("tab"))
+	if panel.session.Target != config.TargetScope {
+		t.Fatalf("confirm tab switched to %s", panel.session.Target)
+	}
+
+	_, panel = openPanel(t)
+	attachTempOverlay(t, panel.session, config.ModeGlobal)
+	pumpPanel(panel, panel.openRoot())
+	panel.showReport("title", nil, "body")
+	if strings.Contains(ansi.Strip(panelView(panel)), keys) {
+		t.Fatalf("report showed tab switch:\n%s", ansi.Strip(panelView(panel)))
+	}
+}
+
+func panelView(panel *optionsPanel) string {
+	_, view := panel.view()
+	return view
+}
+
+func TestOptionsTabKeyCyclesFromTextSection(t *testing.T) {
+	_, panel := openPanel(t)
+	attachTempOverlay(t, panel.session, config.ModeGlobal)
+	pumpPanel(panel, panel.openSection(sectionExecution))
+	if !panel.acceptsText() {
+		t.Fatal("execution should accept text")
+	}
+	drivePanel(panel, keyMsg("tab"))
+	if panel.session.Target != config.TargetOverlay {
+		t.Fatalf("tab in execution target=%s", panel.session.Target)
+	}
+	drivePanel(panel, keyMsg("["))
+	if panel.session.Target != config.TargetOverlay {
+		t.Fatalf("[ in execution switched to %s", panel.session.Target)
+	}
+}
+
+func TestOptionsHintKeepsTabSwitchWhenNarrow(t *testing.T) {
+	app, panel := openPanel(t)
+	attachTempOverlay(t, panel.session, config.ModeGlobal)
+	app.Width, app.Height = 48, 16
+	pumpPanel(panel, panel.openSection(sectionExecution))
+	plain := ansi.Strip(panelView(panel))
+	if !strings.Contains(plain, "Tab") || strings.Contains(plain, "Tab [") {
+		t.Fatalf("narrow hint must show only the Tab key:\n%s", plain)
+	}
+}
+
+func TestOptionsTabDoesNotStealSingleTarget(t *testing.T) {
+	_, panel := openPanel(t)
+	attachTempOverlay(t, panel.session, config.ModeProject)
+	pumpPanel(panel, panel.openSection(sectionInterface))
+	beforeTarget := panel.session.Target
+	before := panel.form.GetFocusedField()
+	if before == nil {
+		t.Fatal("interface section has no focused field")
+	}
+	drivePanel(panel, keyMsg("tab"))
+	if panel.session.Target != beforeTarget {
+		t.Fatalf("single-tab Tab switched %s -> %s", beforeTarget, panel.session.Target)
+	}
+	after := panel.form.GetFocusedField()
+	if after == nil || after == before {
+		t.Fatal("single-tab Tab did not move field focus")
 	}
 }

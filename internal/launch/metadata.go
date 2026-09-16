@@ -5,6 +5,7 @@ import (
 	"strings"
 
 	"github.com/dualface/kander/internal/board"
+	"github.com/dualface/kander/internal/terminal"
 	"github.com/dualface/kander/internal/window"
 )
 
@@ -82,7 +83,11 @@ func renderStartMetadata(text, agent, session, window string) (string, error) {
 	if len(windowLines) > 0 {
 		text = regexp.MustCompile(`(?m)^- `+board.TokenPattern(windowField)+`:.*\n?`).ReplaceAllString(text, "")
 	}
-	return insertAfterField(text, sessionField, windowField, window)
+	text, err = insertAfterField(text, sessionField, windowField, window)
+	if err != nil {
+		return "", err
+	}
+	return board.NewClaimMetadata(text)
 }
 
 func renderTakeoverMetadata(text, agent, session, window string) (string, error) {
@@ -203,10 +208,7 @@ func taskGroupFrom(text string) string {
 }
 
 func locationOf(plan LaunchPlan, outcome LaunchOutcome) string {
-	if plan.Launcher == "herdr" {
-		return "herdr:" + outcome.Tab + ":" + outcome.Pane
-	}
-	return plan.Launcher + ":" + plan.Session + ":" + outcome.Window + ":" + outcome.Pane
+	return terminal.FormatAddress(plan.backend(), plan.address(outcome))
 }
 
 func recordWindowLocation(root string, plan LaunchPlan, entry board.Entry) func(LaunchOutcome) error {
@@ -228,7 +230,7 @@ func recordWindowLocation(root string, plan LaunchPlan, entry board.Entry) func(
 // WINDOW field via the requirement document helper.
 func recordRequirementWindowLocation(root string, plan LaunchPlan, reqID string) func(LaunchOutcome) error {
 	return func(outcome LaunchOutcome) error {
-		current, err := readRequirementFn(root, reqID)
+		current, err := board.ReadRequirementDocument(root, reqID)
 		if err != nil {
 			return err
 		}
@@ -236,6 +238,6 @@ func recordRequirementWindowLocation(root string, plan LaunchPlan, reqID string)
 		if err != nil {
 			return err
 		}
-		return writeRequirementFn(root, reqID, updated)
+		return board.WriteRequirementDocument(root, reqID, updated)
 	}
 }

@@ -21,7 +21,7 @@ func TestDshReviewerContract(t *testing.T) {
 	t.Setenv("DSH_HOME", t.TempDir())
 	t.Setenv("DSH_REVIEW_MODEL", "")
 	t.Setenv("DSH_REVIEW_REASONING_EFFORT", "")
-	settings, err := agentSettingsFor("dsh", "PM")
+	settings, err := agentSettingsFor("dsh", "PMQA", "large")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -109,12 +109,18 @@ func TestDshReviewerContract(t *testing.T) {
 // thing the headless entry point writes to stdout.
 func TestDshReviewerPromptRequiresLastMessageReport(t *testing.T) {
 	ctx := reviewContext{
-		agent: "dsh", role: "PM", root: "/work",
+		agent: "dsh", role: "PMQA", root: "/work",
 		base: strings.Repeat("b", 40), commit: strings.Repeat("a", 40),
 		settings: agentSettings{inspectionRules: "NO-WRITE"},
 	}
-	prompt := buildPrompt(ctx, "/rt/evidence.txt", "Task context.")
-	if !strings.Contains(prompt, lastMessageOutputContract) {
-		t.Fatal("dsh prompt does not require the final message to be the report")
+	// The bootstrap points at the review contract instead of inlining it, so
+	// the last-message report rules live in the rendered contract. dsh must be
+	// among the agents that get them, or report parsing never sees the
+	// kander-findings fence.
+	if contract := buildReviewContract(ctx); !strings.Contains(contract, lastMessageOutputContract) {
+		t.Fatal("dsh review contract does not require the final message to be the report")
+	}
+	if bootstrap := buildPrompt(ctx, "/rt/evidence.txt", "Task context."); strings.Contains(bootstrap, lastMessageOutputContract) {
+		t.Fatal("dsh bootstrap must point at the contract rather than inlining it")
 	}
 }

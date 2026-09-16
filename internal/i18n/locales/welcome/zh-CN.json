@@ -1,0 +1,16 @@
+{
+  "tui.welcome_title": "欢迎使用 Kander",
+  "tui.welcome_intro": "用看板调度多个 AI Agent。当前还没有任务卡，用以下方式开始：",
+  "tui.welcome_item_chat": "1. 按 `c` 打开对话：开始与 Agent 讨论要处理的任务",
+  "tui.welcome_item_issues": "2. 按 `g` 浏览 GitHub Issue，查看需要处理的 Issue",
+  "tui.welcome_item_help": "3. 按 `?` 查看可用的快捷键",
+  "tui.welcome_item_options": "4. 按 `o` 打开选项对话框",
+  "tui.welcome_tip_title": "提示",
+  "tui.welcome_tip": "首次使用前建议先配置要使用的 Agent",
+  "tui.welcome_hint": "Esc 或单击关闭",
+  "tui.board_init_title": "初始化看板？",
+  "tui.board_init_body": "当前还没有 kanban/ 目录。所有任务卡文件都会保存在这个目录中：\n\n{{.V0}}\n\n要现在创建吗？",
+  "tui.board_init_running": "正在创建看板目录…",
+  "tui.board_init_failed": "无法初始化看板：{{.V0}}",
+  "tui.board_init_preview_failed": "无法确定 kanban/ 的创建位置：{{.V0}}"
+}

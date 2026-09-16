@@ -6,7 +6,11 @@ import (
 
 	"github.com/dualface/kander/internal/board"
 	"github.com/dualface/kander/internal/config"
+	"github.com/dualface/kander/internal/probe"
 	"github.com/dualface/kander/internal/process"
+	"github.com/dualface/kander/internal/terminal"
+	_ "github.com/dualface/kander/internal/terminal/builtin"
+	"github.com/dualface/kander/internal/terminal/direct"
 	"github.com/dualface/kander/internal/window"
 )
 
@@ -14,17 +18,10 @@ const (
 	sessionField = board.FieldSession
 	windowField  = board.FieldWindow
 
-	paneSessionOption   = "@kander_session"
-	projectSessionOpt   = "@kander_project"
-	legacyProjectOpt    = "@onevoke_project"
-	tmuxSessionHint     = "tmux new -A -s kander"
-	projectSessionTries = 9
-
 	notifyDefaultTimeout = 120.0
 	notifyPollInterval   = 100 * time.Millisecond
 	sessionDiscoverWait  = 10 * time.Second
-	herdrReadyTimeoutMS  = 15000
-	herdrReportBudget    = time.Second
+	sessionReportBudget  = time.Second
 	resumeOutputLimit    = 8192
 )
 
@@ -45,36 +42,74 @@ func (s AgentSession) Render() string {
 type LaunchPlan struct {
 	warning        func(string)
 	Launcher       string
-	Project        string
-	Tmux           string
-	Session        string
-	SessionExists  bool
-	HerdrBin       string
-	HerdrWorkspace string
-	// ReuseWindow/ReusePane, when set, tell a tmux launch to restart the
-	// agent inside an existing terminal address instead of creating a new
-	// window. Used by decompose so re-running on the same requirement keeps a
-	// single live window instead of piling up orphans.
-	ReuseWindow string
-	ReusePane   string
-	// Env, when set, is merged into the launched agent process environment on
-	// top of the inherited environment. Used to hand per-agent runtime knobs
-	// to agents kander cannot reach through flags — notably DSH, whose
-	// sandbox/approval mode is only configurable through the
-	// DSH_PERMISSION_MODE environment variable its profile reads.
-	Env map[string]string
+	Target         terminal.Target
 	PromptDelivery config.PromptDelivery
 	Prompt         string
+	// Env, when set, is merged into the launched agent process environment on
+	// top of the inherited environment. applyAgentDelivery fills it for agents
+	// whose launch contract needs one — notably DSH, whose sandbox/approval
+	// mode is only reachable through the DSH_PERMISSION_MODE environment
+	// variable its profile reads.
+	Env map[string]string
+}
+
+// backend returns the terminal backend of the resolved launcher. An unknown
+// name launches in the foreground, as the launcher switch always did.
+func (p LaunchPlan) backend() terminal.Backend {
+	if backend, ok := terminal.Lookup(p.Launcher); ok {
+		return backend
+	}
+	backend, _ := terminal.Lookup(direct.Foreground)
+	return backend
+}
+
+func (p LaunchPlan) capabilities() terminal.Capabilities {
+	return p.backend().Capabilities()
+}
+
+// OccupiesTerminal reports that the agent runs in the current terminal, so the
+// caller must wait for it to exit.
+func (p LaunchPlan) OccupiesTerminal() bool {
+	caps := p.capabilities()
+	return !caps.Container && !caps.Detached
+}
+
+// address is the terminal address of a launch outcome.
+func (p LaunchPlan) address(outcome LaunchOutcome) terminal.Address {
+	return terminal.Address{Session: p.Target.Session, Container: outcome.Container, Pane: outcome.Pane}
+}
+
+// OpaqueAddress renders the backend part of the container address of a
+// launch, without the launcher prefix; it is empty without a container.
+func OpaqueAddress(plan LaunchPlan, outcome LaunchOutcome) string {
+	if !plan.capabilities().Container {
+		return ""
+	}
+	return plan.backend().OpaqueAddress(plan.address(outcome))
+}
+
+// spawnConn runs launch-time terminal commands as plain child processes.
+func spawnConn(plan LaunchPlan) terminal.Conn {
+	return terminal.Conn{Program: plan.Target.Program, Run: terminal.SpawnRunner}
+}
+
+// boundedSpawnConn bounds each launch-time command by the probe budget.
+func boundedSpawnConn(plan LaunchPlan) terminal.Conn {
+	return terminal.Conn{Program: plan.Target.Program, Run: terminal.SpawnRunnerWithin(probe.DefaultCommandTimeout)}
+}
+
+// probeConn runs pane probes with process-tree ownership and probe budgets.
+func probeConn(plan LaunchPlan) terminal.Conn {
+	return terminal.Conn{Program: plan.Target.Program, Run: terminal.ProbeRunner}
 }
 
 // LaunchOutcome is the process or terminal address of one launch.
 type LaunchOutcome struct {
-	Process *os.Process
-	Wait    func() (int, error)
-	Poll    func() *int
-	Window  string
-	Tab     string
-	Pane    string
+	Process   *os.Process
+	Wait      func() (int, error)
+	Poll      func() *int
+	Container string
+	Pane      string
 }
 
 // LaunchFailure is a failed launch, together with the result of closing the container created by this attempt.
@@ -135,6 +170,4 @@ var (
 	locateFn            = board.Locate
 	readDocumentFn      = board.ReadDocument
 	moveEntryFn         = board.MoveEntry
-	readRequirementFn   = board.ReadRequirementDocument
-	writeRequirementFn  = board.WriteRequirementDocument
 )

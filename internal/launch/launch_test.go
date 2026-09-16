@@ -112,7 +112,7 @@ func setupBoard(t *testing.T) (root, home, fakeBin string) {
 	}
 	tmuxLog := filepath.Join(root, "tmux.log")
 	writeFakeTmux(t, filepath.Join(fakeBin, "tmux"), tmuxLog)
-	for _, name := range []string{"codex", "claude", "grok", "cursor-agent"} {
+	for _, name := range []string{"codex", "claude", "grok", "cursor-agent", "pi"} {
 		writeFakeAgent(t, filepath.Join(fakeBin, name))
 	}
 	t.Setenv("PATH", fakeBin+string(os.PathListSeparator)+os.Getenv("PATH"))
@@ -185,12 +185,12 @@ func TestLookPathTmux(t *testing.T) {
 	if p != filepath.Join(fakeBin, "tmux") {
 		t.Fatalf("lookPath=%s want %s PATH=%s", p, filepath.Join(fakeBin, "tmux"), os.Getenv("PATH"))
 	}
-	id, err := tmuxSessionID(p)
+	plan, err := prepareLaunch("tmux", t.TempDir(), "start")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if id != "$42" {
-		t.Fatalf("session=%q", id)
+	if id := plan.Target.Session; id != "$42" {
+		t.Fatalf("session=%q", plan.Target.Session)
 	}
 }
 
@@ -369,8 +369,11 @@ func TestResumeClaudeAndGroupPrompt(t *testing.T) {
 	pathEnd = strings.IndexByte(rest, ';')
 	file := strings.TrimSpace(rest[:pathEnd])
 	body, _ := os.ReadFile(file)
-	if !strings.Contains(string(body), "kander move "+groupID+" review") || !strings.Contains(string(body), "已启用的任务组编排模块") {
+	if !strings.Contains(string(body), "此卡是任务组成员") || !strings.Contains(string(body), "KANDER-KANBAN-RULES.md") {
 		t.Fatalf("group prompt=%s", body)
+	}
+	if strings.Contains(string(body), "Delivery Self-Check") || strings.Contains(string(body), "kander move "+groupID+" review") {
+		t.Fatalf("group prompt duplicated rules-file policy: %s", body)
 	}
 }
 

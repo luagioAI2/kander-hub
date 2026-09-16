@@ -353,9 +353,11 @@ func runSessionDiscoverHook(mode, taskID string, previous map[string]struct{}) (
 	}
 }
 
-func sessionDiscoverSnapshot(mode, taskID, launcher string) map[string]struct{} {
+// sessionDiscoverSnapshot records the sessions that exist before a launch whose
+// backend can record a session discovered after start in pane metadata.
+func sessionDiscoverSnapshot(mode, taskID string, paneMetadata bool) map[string]struct{} {
 	previous := map[string]struct{}{}
-	if !config.SessionDiscoversAfterStart(mode) || (launcher != "tmux" && launcher != "tmux-session") {
+	if !config.SessionDiscoversAfterStart(mode) || !paneMetadata {
 		return previous
 	}
 	name, ok := config.ParseSessionHook(mode)
@@ -443,16 +445,20 @@ func agentArguments(agent string, model map[string]string, kind string, session 
 	if len(configs) > 0 {
 		cfg = configs[0]
 	}
-	definition := config.AgentFor(cfg, agent)
-	if resume && definition.Session.Mode == "none" {
-		return nil, config.AgentResumeError(agent)
-	}
 	scale := "small"
 	if kind == "large" {
 		scale = "large"
 	}
 	// The model is picked per task scale; an empty scale model falls back to the shared "model" key of legacy configs.
 	modelID := config.KanbanModelFor(model, scale)
+	return expandAgentInvocation(agent, modelID, model[scale+"_effort"], session, resume, cfg)
+}
+
+func expandAgentInvocation(agent, modelID, effort string, session AgentSession, resume bool, cfg *config.Config) ([]string, error) {
+	definition := config.AgentFor(cfg, agent)
+	if resume && definition.Session.Mode == "none" {
+		return nil, config.AgentResumeError(agent)
+	}
 	if definition.Args == nil {
 		return nil, launchError("launch.unsupported_agent", agent)
 	}
@@ -465,7 +471,7 @@ func agentArguments(agent string, model map[string]string, kind string, session 
 		reference = ""
 		template = config.RewriteKeepSession(template, true)
 	}
-	return config.ExpandAgentArgs(template, modelID, model[scale+"_effort"], reference), nil
+	return config.ExpandAgentArgs(template, modelID, effort, reference), nil
 }
 
 func requireAgentProgram(agentName string, configs ...*config.Config) (*process.AgentProgram, error) {
@@ -479,15 +485,6 @@ func requireAgentProgram(agentName string, configs ...*config.Config) (*process.
 		return program, nil
 	}
 	return nil, launchError("launch.agent_is_not_in_path", executable)
-}
-
-func contains(list []string, value string) bool {
-	for _, item := range list {
-		if item == value {
-			return true
-		}
-	}
-	return false
 }
 
 func itoa(n int) string { return strconv.Itoa(n) }

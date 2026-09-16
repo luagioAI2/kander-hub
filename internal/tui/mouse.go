@@ -5,8 +5,7 @@ func (a *App) boardCardHit(x, y int) *mouseSel {
 	if hit == nil || hit.Kind != "task" {
 		return nil
 	}
-	h, _ := a.size()
-	bodyHeight := h - bodyTop - 2
+	bodyHeight := a.boardBodyHeight()
 	tasks, scroll, _ := columnTaskWindow(a.Model, hit.State, bodyHeight)
 	if hit.Index < scroll || hit.Index >= len(tasks) {
 		return nil
@@ -199,6 +198,10 @@ func (a *App) handleBoardClick(x, y, bstate int) {
 		a.ShowCursor = true
 		return
 	}
+	if state := a.hitColumnStrip(x, y); state != "" {
+		a.Model.FocusState(state)
+		return
+	}
 	if y >= h-1 {
 		return
 	}
@@ -246,6 +249,9 @@ func (a *App) handleBoardMouse(x, y, bstate int) {
 		return
 	}
 	if mouseLeftPressed(bstate) {
+		if a.hitColumnStrip(x, y) != "" {
+			return
+		}
 		if hit := a.boardCardHit(x, y); hit != nil {
 			a.MouseSelecting = true
 			a.MouseAnchor = hit
@@ -282,13 +288,25 @@ func (a *App) hitColumnAt(x, y int) string {
 	return ""
 }
 
+func (a *App) hitColumnStrip(x, y int) string {
+	if !a.columnStripVisible() || y != panelTopRow {
+		return ""
+	}
+	_, w := a.size()
+	for _, cell := range a.columnTabCells(w) {
+		if cell.width > 0 && x >= cell.x && x < cell.x+cell.width {
+			return cell.state
+		}
+	}
+	return ""
+}
+
 func (a *App) hitBoard(x, y int) *boardHit {
-	h, _ := a.size()
 	layout := a.visibleColumnLayout()
 	if len(layout) == 0 {
 		return nil
 	}
-	bodyHeight := h - bodyTop - 2
+	bodyHeight := a.boardBodyHeight()
 	for index, col := range layout {
 		if x < col.X || x >= col.X+col.Width {
 			continue
@@ -297,7 +315,7 @@ func (a *App) hitBoard(x, y int) *boardHit {
 		first := index == 0
 		last := index == len(layout)-1
 		singleNav := a.Model.Single || (first && last && len(a.Model.States()) > 1)
-		if y == 2 && singleNav && len(a.Model.States()) > 1 {
+		if y == panelTopRow && !a.columnStripVisible() && singleNav && len(a.Model.States()) > 1 {
 			if localX <= 2 {
 				return &boardHit{Kind: "nav", Delta: -1}
 			}
@@ -330,14 +348,32 @@ func (a *App) HandleMouse(x, y, bstate int) {
 		a.handleStartMouse(x, y, bstate)
 		return
 	}
+	if a.BoardInit != nil {
+		a.handleBoardInitMouse(x, y, bstate)
+		return
+	}
 	if a.Help {
 		if mouseLeftClicked(bstate) {
 			a.Help = false
 		}
 		return
 	}
+	if a.shouldShowWelcome() {
+		if mouseLeftClicked(bstate) {
+			a.dismissWelcome()
+		}
+		return
+	}
 	if a.Options != nil {
 		a.Options.HandleMouse(x, y, bstate)
+		return
+	}
+	if a.Takeover != nil {
+		a.handleTakeoverMouse(x, y, bstate)
+		return
+	}
+	if a.Issues != nil {
+		a.handleIssuesMouse(x, y, bstate)
 		return
 	}
 	if a.Detail != nil {

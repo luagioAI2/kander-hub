@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/ansi"
 	"github.com/muesli/termenv"
@@ -36,6 +37,10 @@ func keyMsg(name string) tea.KeyMsg {
 		return tea.KeyMsg{Type: tea.KeyLeft}
 	case "right":
 		return tea.KeyMsg{Type: tea.KeyRight}
+	case "tab":
+		return tea.KeyMsg{Type: tea.KeyTab}
+	case "shift-tab":
+		return tea.KeyMsg{Type: tea.KeyShiftTab}
 	}
 	return tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(name)}
 }
@@ -288,10 +293,10 @@ func TestEscapeKeepsSectionEdits(t *testing.T) {
 	if panel.current != sectionReview {
 		t.Fatalf("section=%q", panel.current)
 	}
-	before := panel.session.Config.Reviewers["PM"]
+	before := panel.session.Config.Reviewers["large"]["PMQA"]
 	// ←→ edits in place, with no need to Enter through the whole section.
 	drivePanel(panel, keyMsg("right"))
-	after := panel.session.Config.Reviewers["PM"]
+	after := panel.session.Config.Reviewers["large"]["PMQA"]
 	if after == before {
 		t.Fatalf("right arrow did not change the reviewer (%s)", after)
 	}
@@ -300,8 +305,8 @@ func TestEscapeKeepsSectionEdits(t *testing.T) {
 	if panel.current != "" {
 		t.Fatalf("esc should return to the root menu, got %q", panel.current)
 	}
-	if panel.session.Config.Reviewers["PM"] != after {
-		t.Fatalf("esc discarded the edit: %s", panel.session.Config.Reviewers["PM"])
+	if panel.session.Config.Reviewers["large"]["PMQA"] != after {
+		t.Fatalf("esc discarded the edit: %s", panel.session.Config.Reviewers["large"]["PMQA"])
 	}
 	if !panel.dirty {
 		t.Fatal("changed config must be marked unsaved")
@@ -315,9 +320,9 @@ func TestEnterSavesReviewSection(t *testing.T) {
 	_, panel := openPanel(t)
 	configPath := os.Getenv(config.EnvConfig)
 	pumpPanel(panel, panel.dispatch(sectionReview))
-	before := panel.session.Config.Reviewers["PM"]
+	before := panel.session.Config.Reviewers["large"]["PMQA"]
 	drivePanel(panel, keyMsg("right"))
-	after := panel.session.Config.Reviewers["PM"]
+	after := panel.session.Config.Reviewers["large"]["PMQA"]
 	if after == before {
 		t.Fatal("right arrow did not change the reviewer")
 	}
@@ -332,12 +337,24 @@ func TestEnterSavesReviewSection(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Reviewers["PM"] != after {
-		t.Fatalf("disk PM=%s want %s", loaded.Reviewers["PM"], after)
+	if loaded.Reviewers["large"]["PMQA"] != after {
+		t.Fatalf("disk PMQA=%s want %s", loaded.Reviewers["large"]["PMQA"], after)
 	}
 	_, err = os.Stat(configPath)
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBlurredInlineSelectKeepsValueColumn(t *testing.T) {
+	theme := huhTheme(themePalette("dark"))
+	focused := lipgloss.Width(theme.Focused.PrevIndicator.String())
+	blurred := lipgloss.Width(theme.Blurred.PrevIndicator.String())
+	if focused != 2 || blurred != 2 {
+		t.Fatalf("prev indicator widths focused=%d blurred=%d want 2", focused, blurred)
+	}
+	if focused != blurred {
+		t.Fatalf("blurred prev indicator %d must match focused %d so ←→ values do not jump", blurred, focused)
 	}
 }
 
@@ -487,7 +504,8 @@ func TestInterfaceWriteDoesNotCommitOtherSessionEdits(t *testing.T) {
 	stored := config.DefaultConfig()
 	stored.WelcomeComplete = true
 	app, panel := openPanel(t, stored)
-	panel.session.SetReviewer("PM", "claude")
+	panel.session.SetReviewer("large", "PMQA", "claude")
+	panel.session.SetReviewer("small", "PMQA", "claude")
 	panel.markDirty()
 	app.Theme = "light"
 	panel.session.Config.TUI.Theme = "light"
@@ -499,13 +517,13 @@ func TestInterfaceWriteDoesNotCommitOtherSessionEdits(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if loaded.Reviewers["PM"] != stored.Reviewers["PM"] {
-		t.Fatalf("interface write committed reviewer=%s", loaded.Reviewers["PM"])
+	if loaded.Reviewers["large"]["PMQA"] != stored.Reviewers["large"]["PMQA"] {
+		t.Fatalf("interface write committed reviewer=%s", loaded.Reviewers["large"]["PMQA"])
 	}
 	if loaded.TUI.Theme != "light" {
 		t.Fatalf("stored theme=%s", loaded.TUI.Theme)
 	}
-	if panel.session.Config.Reviewers["PM"] != "claude" || panel.session.Config.TUI.Theme != "light" {
+	if panel.session.Config.Reviewers["large"]["PMQA"] != "claude" || panel.session.Config.TUI.Theme != "light" {
 		t.Fatalf("session lost edits: %+v", panel.session.Config)
 	}
 }
@@ -610,12 +628,14 @@ func TestSelectorFieldIndexAccountsForNestedModels(t *testing.T) {
 	pumpPanel(panel, panel.dispatch(sectionReview))
 	bind = panel.bind
 	previous := -1
-	for _, role := range config.ReviewRoles {
-		index := bind.fieldIndex[roleFocusKey(role)]
-		if index <= previous {
-			t.Fatalf("%s Reviewer 位置 %d 未按顺序递增", role, index)
+	for _, scale := range config.TaskScales {
+		for _, role := range config.ReviewRoles {
+			index := bind.fieldIndex[reviewerFocusKey(role, scale)]
+			if index <= previous {
+				t.Fatalf("%s %s Reviewer 位置 %d 未按规模分组递增", scale, role, index)
+			}
+			previous = index
 		}
-		previous = index
 	}
 }
 
@@ -650,12 +670,13 @@ func assertRootFocus(t *testing.T, panel *optionsPanel, want string) {
 		t.Fatalf("row %d missing focus marker: %q", lo, text)
 	}
 	labels := map[string]string{
-		sectionInterface: uiText("tui.interface"),
-		sectionExecution: uiText("tui.execution_and_models"),
-		sectionReview:    uiText("tui.review_and_models"),
-		sectionDoctor:    uiText("tui.environment_check"),
-		sectionSave:      uiText("tui.save_and_apply"),
-		sectionClose:     uiText("tui.close_2"),
+		sectionInterface:    uiText("tui.interface"),
+		sectionExecution:    uiText("tui.execution_and_models"),
+		sectionReview:       uiText("tui.review_and_models"),
+		sectionReviewStages: uiText("tui.review_stages"),
+		sectionDoctor:       uiText("tui.environment_check"),
+		sectionSave:         uiText("tui.save_and_apply"),
+		sectionClose:        uiText("tui.close_2"),
 	}
 	if !strings.Contains(text, labels[want]) {
 		t.Fatalf("focus on %q, want section %s", text, want)
@@ -682,6 +703,21 @@ func TestRootCursorRestoredAfterSubmitFromSection(t *testing.T) {
 	}
 	drivePanel(panel, keyMsg("enter"))
 	assertRootFocus(t, panel, sectionReview)
+}
+
+func TestNextFieldPastLastStaysInSection(t *testing.T) {
+	_, panel := openPanel(t)
+	pumpPanel(panel, panel.dispatch(sectionInterface))
+	for i := 0; i < panel.bind.focusable+5; i++ {
+		drivePanel(panel, huh.NextField())
+		if panel.current != sectionInterface {
+			t.Fatalf("NextField #%d left the section: current=%q", i, panel.current)
+		}
+	}
+	drivePanel(panel, keyMsg("enter"))
+	if panel.current != "" {
+		t.Fatalf("enter should still submit the section, got %q", panel.current)
+	}
 }
 
 func TestRootCursorRestoredAfterCloseConfirmKeepEditing(t *testing.T) {
@@ -748,21 +784,20 @@ func TestExecutionModelInputSavesWhenAgentsMatch(t *testing.T) {
 func TestReviewModelInputSavesPMRole(t *testing.T) {
 	_, panel := openPanel(t)
 	pumpPanel(panel, panel.dispatch(sectionReview))
-	if len(panel.bind.formFields) < 4 {
-		t.Fatal("review section should have reviewer, two scale stages, and model fields")
+	if len(panel.bind.formFields) < 2 {
+		t.Fatal("review section should have reviewer and model fields per scale")
 	}
-	before := panel.session.Config.Models.ReviewRoles["PM"]["model"]
+	before := panel.session.Config.Models.ReviewRoles["PMQA"]["large_model"]
 	drivePanel(panel, keyMsg("down"))
-	drivePanel(panel, keyMsg("down"))
-	drivePanel(panel, keyMsg("down"))
-	if panel.form.GetFocusedField() != panel.bind.formFields[3] {
-		t.Fatal("three downs should focus the PM model input after the two scale stages")
+	modelIndex := panel.bind.fieldIndex[modelFocusKey(panel.bind.modelFields[0])]
+	if panel.form.GetFocusedField() != focusableFieldAt(panel.bind, modelIndex) {
+		t.Fatal("one down should focus the PM large model input after agent")
 	}
 	typeRune(panel, 'X')
 	want := before + "X"
 	assertTypedIntoView(t, panel, want)
-	if got := panel.session.Config.Models.ReviewRoles["PM"]["model"]; got != want {
-		t.Fatalf("session PM model=%q want %q", got, want)
+	if got := panel.session.Config.Models.ReviewRoles["PMQA"]["large_model"]; got != want {
+		t.Fatalf("session PM large_model=%q want %q", got, want)
 	}
 	if !panel.dirty {
 		t.Fatal("typing into the PM model input must mark unsaved changes")
@@ -772,61 +807,51 @@ func TestReviewModelInputSavesPMRole(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got := loaded.Models.ReviewRoles["PM"]["model"]; got != want {
-		t.Fatalf("disk PM model=%q want %q", got, want)
+	if got := loaded.Models.ReviewRoles["PMQA"]["large_model"]; got != want {
+		t.Fatalf("disk PM large_model=%q want %q", got, want)
 	}
 }
 
 func TestReviewStagePerScaleSaves(t *testing.T) {
 	_, panel := openPanel(t)
-	pumpPanel(panel, panel.dispatch(sectionReview))
-	before, err := config.ReviewStageFor(panel.session.Config, "large", "PM")
+	pumpPanel(panel, panel.dispatch(sectionReviewStages))
+	before, err := config.ReviewStageFor(panel.session.Config, "large", "PMQA")
 	if err != nil {
 		t.Fatal(err)
 	}
-	drivePanel(panel, keyMsg("down"))
 	drivePanel(panel, keyMsg("right"))
-	after, err := config.ReviewStageFor(panel.session.Config, "large", "PM")
+	after, err := config.ReviewStageFor(panel.session.Config, "large", "PMQA")
 	if err != nil || after == before {
-		t.Fatalf("large PM stage did not change: %s -> %s (%v)", before, after, err)
+		t.Fatalf("large PMQA stage did not change: %s -> %s (%v)", before, after, err)
 	}
-	small, err := config.ReviewStageFor(panel.session.Config, "small", "PM")
+	small, err := config.ReviewStageFor(panel.session.Config, "small", "PMQA")
 	if err != nil || small != before {
-		t.Fatalf("small PM stage changed unexpectedly: %s (%v)", small, err)
+		t.Fatalf("small PMQA stage changed unexpectedly: %s (%v)", small, err)
 	}
 	drivePanel(panel, keyMsg("enter"))
-	loaded, err := config.Load(true)
+	loaded, err := config.LoadScope(true)
 	if err != nil {
 		t.Fatal(err)
 	}
-	got, err := config.ReviewStageFor(loaded, "large", "PM")
+	got, err := config.ReviewStageFor(loaded, "large", "PMQA")
 	if err != nil || got != after {
-		t.Fatalf("disk large PM=%s want %s (%v)", got, after, err)
+		t.Fatalf("disk large PMQA=%s want %s (%v)", got, after, err)
 	}
 }
 
-func TestExecutableInputsDeduplicateAndPersist(t *testing.T) {
+func TestReviewerAgentPerScaleIndependent(t *testing.T) {
 	_, panel := openPanel(t)
-	pumpPanel(panel, panel.dispatch(sectionExecution))
-	count := 0
-	for i, field := range panel.bind.modelFields {
-		if strings.HasSuffix(field.Key(), ".process_name") {
-			count++
-			*panel.bind.modelValues[i] = "node"
-		}
+	pumpPanel(panel, panel.dispatch(sectionReview))
+	beforeLarge := config.ReviewerFor(panel.session.Config, "large", "PMQA")
+	beforeSmall := config.ReviewerFor(panel.session.Config, "small", "PMQA")
+	drivePanel(panel, keyMsg("right"))
+	afterLarge := config.ReviewerFor(panel.session.Config, "large", "PMQA")
+	afterSmall := config.ReviewerFor(panel.session.Config, "small", "PMQA")
+	if afterLarge == beforeLarge {
+		t.Fatal("large PMQA reviewer did not change")
 	}
-	if count != 1 {
-		t.Fatalf("duplicate process inputs: %d", count)
-	}
-	panel.bind.apply(panel)
-	drivePanel(panel, keyMsg("enter"))
-	loaded, err := config.Load(true)
-	if err != nil {
-		t.Fatal(err)
-	}
-	agent := loaded.KanbanAgents["large"]
-	if loaded.Agents[agent].ProcessName != "node" {
-		t.Fatal(loaded.Agents)
+	if afterSmall != beforeSmall {
+		t.Fatalf("small PM reviewer changed unexpectedly: %s -> %s", beforeSmall, afterSmall)
 	}
 }
 
@@ -857,8 +882,15 @@ func TestOptionsPanelShowsOverlayNotice(t *testing.T) {
 	}
 	_, view := app.Options.view()
 	plain := ansi.Strip(view)
-	if !strings.Contains(plain, config.OverlayFilename) || !strings.Contains(plain, config.Text("tui.base_config", "")) {
-		t.Fatalf("overlay notice not rendered:\n%s", plain)
+	basePath := app.Options.session.BasePath
+	if basePath == "" {
+		t.Fatal("missing session base path")
+	}
+	if !strings.Contains(plain, basePath) && !strings.Contains(plain, filepath.Base(basePath)) {
+		t.Fatalf("global tab should show the base config path:\n%s", plain)
+	}
+	if strings.Contains(plain, config.OverlayFilename) {
+		t.Fatalf("global tab should hide the overlay path:\n%s", plain)
 	}
 }
 
@@ -871,9 +903,9 @@ func TestOptionsSaveLeavesOverlayIsolated(t *testing.T) {
 	t.Chdir(dir)
 	_, panel := openPanel(t)
 	pumpPanel(panel, panel.dispatch(sectionReview))
-	before := panel.session.Config.Reviewers["PM"]
+	before := panel.session.Config.Reviewers["large"]["PMQA"]
 	drivePanel(panel, keyMsg("right"))
-	after := panel.session.Config.Reviewers["PM"]
+	after := panel.session.Config.Reviewers["large"]["PMQA"]
 	if after == before {
 		t.Fatal("right arrow did not change the reviewer")
 	}
@@ -892,8 +924,8 @@ func TestOptionsSaveLeavesOverlayIsolated(t *testing.T) {
 	if scopeCfg.TUI.Theme == "dark" || scopeCfg.TUI.Columns == 2 {
 		t.Fatalf("TUI save wrote overlay-only tui values into the scope file: %+v", scopeCfg.TUI)
 	}
-	if scopeCfg.Reviewers["PM"] != after {
-		t.Fatalf("scope PM=%s want %s", scopeCfg.Reviewers["PM"], after)
+	if scopeCfg.Reviewers["large"]["PMQA"] != after {
+		t.Fatalf("scope PMQA=%s want %s", scopeCfg.Reviewers["large"]["PMQA"], after)
 	}
 	merged, err := config.Load(true)
 	if err != nil {
@@ -940,5 +972,19 @@ func TestSaveColumnsLeavesOverlayTUIIsolated(t *testing.T) {
 	}
 	if merged.TUI.Columns != 6 {
 		t.Fatalf("runtime merge lost overlay columns: %d", merged.TUI.Columns)
+	}
+}
+
+func TestFitOptionsFormKeepsFooterBlankLine(t *testing.T) {
+	height, gap := fitOptionsForm(10, 8)
+	if gap != "\n\n" {
+		t.Fatalf("footer gap=%q, want blank line before hint", gap)
+	}
+	if height != 6 {
+		t.Fatalf("form height=%d, want 6 (available minus blank+hint)", height)
+	}
+	height, gap = fitOptionsForm(3, 20)
+	if gap != "\n\n" || height != 3 {
+		t.Fatalf("natural fit: height=%d gap=%q", height, gap)
 	}
 }

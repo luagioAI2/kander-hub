@@ -7,6 +7,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 	"github.com/dualface/kander/internal/launch"
+	"github.com/dualface/kander/internal/terminal"
 )
 
 func TestLoadingStartWheelChangesSelectionAndDiscardsPreview(t *testing.T) {
@@ -16,20 +17,20 @@ func TestLoadingStartWheelChangesSelectionAndDiscardsPreview(t *testing.T) {
 	}})
 	app.Model.SelectTaskIndex("todo", 0)
 	selected := app.Model.SelectedTask().TaskID
-	app.HandleKey("s")
+	app.confirmSelectedStart()
 	old := app.takePending()
 	app.HandleMouse(0, 0, mouseBtn5Pressed)
 	if app.Model.SelectedTask().TaskID == selected || app.StartConfirmation != nil {
 		t.Fatal("loading dialog blocked board wheel or retained stale selection")
 	}
-	app.HandleKey("s")
+	app.confirmSelectedStart()
 	dialog := app.StartConfirmation
 	app.applyWork(old().(workMsg).payload)
-	if app.StartConfirmation != dialog || dialog.phase != startLoading {
+	if app.StartConfirmation != dialog || dialog.phase != confirmLoading {
 		t.Fatal("old wheel selection overwrote new preview")
 	}
 	finishStartPreview(app)
-	if dialog.phase != startReady || dialog.TaskID != app.Model.SelectedTask().TaskID {
+	if dialog.phase != confirmReady || dialog.TaskID != app.Model.SelectedTask().TaskID {
 		t.Fatal("new selection preview lost")
 	}
 }
@@ -49,14 +50,14 @@ func TestStartResultViewportRetainsNarrowContent(t *testing.T) {
 			app.Model.SetBoard(BoardPayload{Tasks: []Task{{TaskID: id, State: "todo"}}})
 			app.StartTask = func(r startRequest) (launch.StartResult, error) {
 				result := launch.StartResult{TaskID: r.TaskID, Agent: r.Agent,
-					Plan:    launch.LaunchPlan{Launcher: "tmux-session", Session: "kb-board-start-task-key-12345678"},
-					Outcome: launch.LaunchOutcome{Window: "@9", Pane: "%9"}, Warnings: []string{strings.Repeat("warning-prefix-", 4) + warning}}
+					Plan:    launch.LaunchPlan{Launcher: "tmux-session", Target: terminal.Target{Session: "kb-board-start-task-key-12345678"}},
+					Outcome: launch.LaunchOutcome{Container: "@9", Pane: "%9"}, Warnings: []string{strings.Repeat("warning-prefix-", 4) + warning}}
 				if failed {
 					return result, errors.New("launch-rolled-back-for-" + address)
 				}
 				return result, nil
 			}
-			app.HandleKey("s")
+			app.confirmSelectedStart()
 			finishStartPreview(app)
 			app.HandleKey("y")
 			app.applyWork(app.takePending()().(workMsg).payload)

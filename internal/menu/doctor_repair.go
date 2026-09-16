@@ -3,6 +3,8 @@ package menu
 import (
 	"github.com/dualface/kander/internal/config"
 	"github.com/dualface/kander/internal/i18n"
+	"github.com/dualface/kander/internal/terminal/builtin"
+	"github.com/dualface/kander/internal/terminal/direct"
 )
 
 func repairDoctorConfig(agents map[string]agentState, tools TerminalTools) (*config.Config, bool) {
@@ -12,10 +14,27 @@ func repairDoctorConfig(agents map[string]agentState, tools TerminalTools) (*con
 	text := func(id string, args ...any) string {
 		return i18n.Text(language, id, args...)
 	}
+	_, overlay, overlayErr := config.ReadOverlay("")
+	if overlayErr != nil {
+		warning(overlayErr.Error())
+	}
 
 	cfg, result, err := config.Repair(func(cfg *config.Config) {
 		language = cfg.Language
-		changes = repairConfiguredTools(cfg, agents, tools)
+		// Derive policy from the repaired scope so missing or malformed scope
+		// files can still honor project activation. Never save this merged view.
+		policy := cfg
+		if overlayErr == nil && overlay != nil {
+			merged, mergeErr := config.ApplyOverlay(cfg, overlay)
+			if mergeErr != nil {
+				// Keep scope repair available; doctor's final Load reports the
+				// invalid overlay as unhealthy after repairing the scope file.
+				warning(mergeErr.Error())
+			} else {
+				policy = merged
+			}
+		}
+		changes = repairConfiguredTools(cfg, policy, agents, tools)
 	})
 	if result.BackupPath != "" {
 		hint(text("menu.original_config_backed_up") + result.BackupPath)
@@ -37,7 +56,7 @@ func repairDoctorConfig(agents map[string]agentState, tools TerminalTools) (*con
 	return cfg, true
 }
 
-func repairConfiguredTools(cfg *config.Config, agents map[string]agentState, tools TerminalTools) []string {
+func repairConfiguredTools(cfg, policy *config.Config, agents map[string]agentState, tools TerminalTools) []string {
 	var changes []string
 	choose := func(names []string, review bool) string {
 		for _, name := range names {
@@ -65,26 +84,44 @@ func repairConfiguredTools(cfg *config.Config, agents map[string]agentState, too
 			cfg.KanbanAgents[scale] = selected
 		}
 	}
+	if cfg.ChatAgent == "" {
+		cfg.ChatAgent = cfg.KanbanAgents["large"]
+	}
+	if !agentUsable(agents[cfg.ChatAgent]) && execution != "" {
+		set("chat_agent", &cfg.ChatAgent, execution)
+	}
 	reviewer := choose(config.ReviewAgentNames(cfg), true)
-	for _, role := range config.ReviewRoles {
-		selected := cfg.Reviewers[role]
-		if !reviewerUsable(agents[selected]) && reviewer != "" {
-			set("reviewers."+role, &selected, reviewer)
-			cfg.Reviewers[role] = selected
-			// Models are bound to the reviewer; picking a new one adopts that reviewer's model settings.
-			entry := cfg.Models.Review[selected]
-			cfg.Models.ReviewRoles[role] = map[string]string{"model": entry["model"], "effort": entry["effort"]}
+	for _, scale := range config.TaskScales {
+		if cfg.Reviewers[scale] == nil {
+			cfg.Reviewers[scale] = map[string]string{}
+		}
+		for _, role := range config.ReviewRoles {
+			selected := cfg.Reviewers[scale][role]
+			if !reviewerUsable(agents[selected]) && reviewer != "" {
+				set("reviewers."+scale+"."+role, &selected, reviewer)
+				cfg.Reviewers[scale][role] = selected
+				// Models are bound to the reviewer; picking a new one adopts that reviewer's model settings.
+				entry := cfg.Models.Review[selected]
+				roleEntry := cfg.Models.ReviewRoles[role]
+				if roleEntry == nil {
+					roleEntry = map[string]string{}
+					cfg.Models.ReviewRoles[role] = roleEntry
+				}
+				roleEntry[scale+"_model"] = entry["model"]
+				roleEntry[scale+"_effort"] = entry["effort"]
+				roleEntry[scale+"_agent"] = selected
+			}
 		}
 	}
 	if !doctorLauncherAvailable(cfg.Launcher, tools) {
-		replacement := "foreground"
+		replacement := direct.Foreground
 		switch {
 		case isWindowsOS():
-			replacement = "console"
+			replacement = direct.Console
 		case tools.Herdr.Available():
-			replacement = "herdr"
+			replacement = builtin.Herdr
 		case tools.Tmux.Available():
-			replacement = "tmux-session"
+			replacement = builtin.TmuxSession
 		}
 		set("launcher", &cfg.Launcher, replacement)
 	}
@@ -102,22 +139,22 @@ func repairConfiguredTools(cfg *config.Config, agents map[string]agentState, too
 // not mean the launcher can start right now — prepareLaunch still requires
 // herdr to actually be on PATH.
 func doctorLauncherAvailable(launcher string, tools TerminalTools) bool {
-	if launcher == "foreground" {
+	if launcher == direct.Foreground {
 		return true
 	}
-	if isWindowsOS() && (launcher == "tmux" || launcher == "tmux-session") {
+	if isWindowsOS() && (launcher == builtin.Tmux || launcher == builtin.TmuxSession) {
 		return false
 	}
-	if launcher == "console" {
+	if launcher == direct.Console {
 		return isWindowsOS()
 	}
 	switch launcher {
 	case "auto":
 		return tools.Herdr.Installed() || tools.Tmux.Available()
-	case "herdr":
+	case builtin.Herdr:
 		return tools.Herdr.Installed()
-	case "tmux", "tmux-session":
+	case builtin.Tmux, builtin.TmuxSession:
 		return tools.Tmux.Available()
 	}
-	return false
+	return definitionLauncherAvailable(launcher)
 }

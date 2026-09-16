@@ -2,6 +2,7 @@ package i18n
 
 import (
 	"encoding/json"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -17,15 +18,43 @@ import (
 
 var argumentPattern = regexp.MustCompile(`\.V([0-9]+)`)
 
+// testCatalogFiles mirrors i18n.catalogFiles; every language is the concatenation
+// of its general catalog and its topic catalogs, and duplicates are rejected.
+var testCatalogFiles = []string{
+	"locales/install/%s.json",
+	"locales/%s.json",
+	"locales/issue/%s.json",
+	"locales/agentlanguage/%s.json",
+	"locales/orchestrate/%s.json",
+	"locales/chat/%s.json",
+	"locales/welcome/%s.json",
+	"locales/terminal/%s.json",
+	"locales/detail/%s.json",
+	"locales/actions/%s.json",
+	"locales/result/%s.json",
+	"locales/dialog/%s.json",
+	"locales/check/%s.json",
+}
+
 func readCatalog(t *testing.T, name string) map[string]string {
 	t.Helper()
-	data, err := catalogs.ReadFile("locales/" + name + ".json")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var messages map[string]string
-	if err := json.Unmarshal(data, &messages); err != nil {
-		t.Fatal(err)
+	messages := map[string]string{}
+	for _, format := range testCatalogFiles {
+		path := fmt.Sprintf(format, name)
+		data, err := catalogs.ReadFile(path)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var fileMessages map[string]string
+		if err := json.Unmarshal(data, &fileMessages); err != nil {
+			t.Fatalf("%s: %v", path, err)
+		}
+		for id, message := range fileMessages {
+			if _, duplicate := messages[id]; duplicate {
+				t.Fatalf("duplicate message id %s in %s", id, path)
+			}
+			messages[id] = message
+		}
 	}
 	return messages
 }
@@ -62,6 +91,40 @@ func TestCatalogs(t *testing.T) {
 				t.Errorf("%s/%s: %v", lang, id, err)
 			}
 		}
+	}
+}
+
+func TestLaunchPromptsDoNotInlineDeliveryPolicy(t *testing.T) {
+	for _, language := range []string{"en", "zh-CN", "ja"} {
+		messages := readCatalog(t, language)
+		for _, id := range []string{"launch.prompt.start_single", "launch.prompt.start_group"} {
+			message := messages[id]
+			if strings.Contains(message, "Delivery Self-Check") || strings.Contains(message, "KANDER-CODE-RULES.md") {
+				t.Fatalf("%s/%s duplicates policy from the rules file: %s", language, id, message)
+			}
+		}
+	}
+}
+
+func TestDialogTopicKeysMatch(t *testing.T) {
+	keys := func(lang string) map[string]struct{} {
+		data, err := catalogs.ReadFile("locales/dialog/" + lang + ".json")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var messages map[string]string
+		if err := json.Unmarshal(data, &messages); err != nil {
+			t.Fatal(err)
+		}
+		out := map[string]struct{}{}
+		for id := range messages {
+			out[id] = struct{}{}
+		}
+		return out
+	}
+	en, cn, ja := keys("en"), keys("zh-CN"), keys("ja")
+	if !reflect.DeepEqual(en, cn) || !reflect.DeepEqual(en, ja) {
+		t.Fatalf("dialog topic keys differ: en=%d cn=%d ja=%d", len(en), len(cn), len(ja))
 	}
 }
 

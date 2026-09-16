@@ -72,6 +72,7 @@ func TestScreensFillBackground(t *testing.T) {
 			app.Help = false
 
 			app.openDetail()
+			finishQueuedWork(t, app)
 			expectFilled(t, "detail", app.View())
 
 			app.DetailSearching, app.DetailQuery = true, "line"
@@ -86,7 +87,7 @@ func TestScreensFillBackground(t *testing.T) {
 			expectFilled(t, "detail with an empty document", app.View())
 			app.Detail = nil
 
-			for _, phase := range []startPhase{startLoading, startReady, startRunning, startFinished} {
+			for _, phase := range []confirmPhase{confirmLoading, confirmReady, confirmRunning, confirmFinished} {
 				dialog := fillProbeApp(t, theme, width, height)
 				dialog.confirmSelectedStart()
 				if dialog.StartConfirmation == nil {
@@ -97,6 +98,26 @@ func TestScreensFillBackground(t *testing.T) {
 				dialog.StartConfirmation.Warnings = []string{"short warning", "a warning long enough to wrap on a narrow screen"}
 				expectFilled(t, "start dialog", dialog.View())
 			}
+
+			for _, phase := range []confirmPhase{confirmLoading, confirmReady, confirmRunning, confirmFinished} {
+				dialog := fillProbeApp(t, theme, width, height)
+				dialog.BoardInit = &boardInitState{
+					confirmDialog: confirmDialog{
+						phase:   phase,
+						message: "could not initialize\n" + strings.Repeat("error line\n", 6),
+						failed:  phase == confirmFinished,
+					},
+					path: "/tmp/project/kanban",
+				}
+				expectFilled(t, "board init dialog", dialog.View())
+			}
+
+			actions := fillProbeApp(t, theme, width, height)
+			source := actionTestSource(t, "backlog", true)
+			actions.TaskActions = &taskActions{id: source.snapshot.Entry.TaskID, source: source, items: availableTaskActions("backlog", "window")}
+			expectFilled(t, "task action menu", actions.View())
+			pumpActionForm(actions, actions.openTaskActionForm(actionArchive))
+			expectFilled(t, "task action form", actions.View())
 
 			notice := fillProbeApp(t, theme, width, height)
 			_, popup := notice.renderStartPopup([]string{"copied a fairly long notice line", "second line"})

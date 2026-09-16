@@ -84,6 +84,31 @@ func formatReviewRoleModes(stages map[string]string) string {
 	return strings.Join(parts, " ")
 }
 
+func formatReviewerRoleLine(cfg *Config, scale, role string) string {
+	reviewer := ReviewerFor(cfg, scale, role)
+	model, effort := ReviewModelFor(cfg, reviewer, role, scale)
+	return role + ": " + reviewer + " " + formatModelEffort(model, effort)
+}
+
+// FormatReviewersSummary returns one line per role when both scales match, or
+// large/small-prefixed lines when a role's reviewer or model differs by scale.
+func FormatReviewersSummary(cfg *Config) []string {
+	var lines []string
+	for _, role := range ReviewRoles {
+		large := formatReviewerRoleLine(cfg, "large", role)
+		small := formatReviewerRoleLine(cfg, "small", role)
+		if large == small {
+			lines = append(lines, large)
+			continue
+		}
+		lines = append(lines,
+			Text("config.large")+" "+large,
+			Text("config.small")+" "+small,
+		)
+	}
+	return lines
+}
+
 // FormatReviewStagesSummary returns one line when both scales match, or one line
 // per scale (large then small) when they differ.
 func FormatReviewStagesSummary(stages map[string]map[string]string) []string {
@@ -119,8 +144,11 @@ func FormatConfigLines(cfg *Config) ([]string, error) {
 	lines = append(lines, Text("config.welcome")+": "+status)
 	lines = append(lines, AgentWarnings(effective)...)
 	lines = append(lines, Text("config.kanban_agent")+": "+FormatKanbanAgentsSummary(effective))
+	chatAgent := ChatAgentFor(effective)
+	lines = append(lines, Text("config.chat_agent")+": "+chatAgent)
+	lines = append(lines, Text("config.chat_model")+": "+FormatChatModelSummary(effective, chatAgent, effective.Models.Chat[chatAgent]))
 	lines = append(lines, Text("config.launcher")+": "+effective.Launcher)
-	inUse := ExecutionAgentsInUse(effective)
+	inUse := KanbanAgentsInUse(effective)
 	for _, agent := range inUse {
 		entry := effective.Models.Kanban[agent]
 		label := ""
@@ -129,11 +157,7 @@ func FormatConfigLines(cfg *Config) ([]string, error) {
 		}
 		lines = append(lines, Text("config.kanban_model")+label+": "+FormatKanbanModelSummary(effective, agent, entry))
 	}
-	for _, role := range ReviewRoles {
-		reviewer := effective.Reviewers[role]
-		model, effort := ReviewModelFor(effective, reviewer, role)
-		lines = append(lines, role+": "+reviewer+" "+formatModelEffort(model, effort))
-	}
+	lines = append(lines, FormatReviewersSummary(effective)...)
 	stageSummaries := FormatReviewStagesSummary(effective.ReviewStages)
 	if len(stageSummaries) == 1 {
 		lines = append(lines, Text("config.review_stages")+": "+stageSummaries[0])
@@ -166,7 +190,7 @@ func ReviewModelLines(cfg *Config, agent string) ([]string, error) {
 	return []string{entry["model"], entry["effort"]}, nil
 }
 
-// ReviewStageLines returns auto|skip|required for large then small, each in PM/CSA/Hacker/QA order.
+// ReviewStageLines returns auto|skip|required for large then small, each in ReviewRoles order.
 func ReviewStageLines(cfg *Config) ([]string, error) {
 	effective, err := Effective(cfg)
 	if err != nil {

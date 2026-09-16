@@ -16,7 +16,13 @@ printf '%s\n' "$@" > "$FAKE_CLAUDE_ARGV"
 instruction=$(cat)
 prompt=${instruction#*task file at }
 prompt=${prompt%%; read the complete file first*}
-cat "$prompt" > "$FAKE_CLAUDE_PROMPT"
+contract=$(sed -n 's/^Before reviewing, read the complete review contract at \(.*\) and follow it exactly\.$/\1/p' "$prompt")
+{
+    cat "$prompt"
+    if [ -n "$contract" ]; then
+        cat "$contract"
+    fi
+} > "$FAKE_CLAUDE_PROMPT"
 pwd -P > "$FAKE_CLAUDE_CWD"
 printf '%s\n' "$CLAUDE_CONFIG_DIR" > "$FAKE_CLAUDE_HOME"
 if [ -n "${FAKE_CLAUDE_SPEC_SNAPSHOT_LOG:-}" ]; then
@@ -87,7 +93,7 @@ func newClaudeHarness(t *testing.T) *reviewHarness {
 
 func TestClaudeIsolationAndReport(t *testing.T) {
 	h := newClaudeHarness(t)
-	code, out, err := h.review("claude", "QA", "确认改动正确")
+	code, out, err := h.review("claude", "PMQA", "确认改动正确")
 	if code != 0 {
 		t.Fatalf("code=%d err=%s", code, err)
 	}
@@ -124,7 +130,7 @@ func TestClaudeInterruptCollectsProcessGroup(t *testing.T) {
 	}
 	ch := make(chan result, 1)
 	go func() {
-		code, _, err := h.review("claude", "QA", "确认改动正确")
+		code, _, err := h.review("claude", "PMQA", "确认改动正确")
 		ch <- result{code, err}
 	}()
 	deadline := time.Now().Add(5 * time.Second)
@@ -163,7 +169,7 @@ func TestClaudeTimeout(t *testing.T) {
 	h := newClaudeHarness(t)
 	t.Setenv("FAKE_CLAUDE_SLEEP", "1")
 	t.Setenv("CLAUDE_REVIEW_MAX_RUNTIME_SECONDS", "1")
-	code, _, err := h.review("claude", "QA", "确认改动正确")
+	code, _, err := h.review("claude", "PMQA", "确认改动正确")
 	if code != 124 || !strings.Contains(err, "Claude review exceeded 1 seconds") {
 		t.Fatalf("code=%d err=%q", code, err)
 	}
@@ -173,7 +179,7 @@ func TestClaudeDelayedTamperRejected(t *testing.T) {
 	h := newClaudeHarness(t)
 	target := filepath.Join(h.repo, "escaped.txt")
 	t.Setenv("FAKE_CLAUDE_DELAYED_TAMPER", target)
-	code, _, err := h.review("claude", "QA", "确认改动正确")
+	code, _, err := h.review("claude", "PMQA", "确认改动正确")
 	if code != 2 || !strings.Contains(err, "left background child processes") {
 		t.Fatalf("code=%d err=%q", code, err)
 	}
@@ -186,7 +192,7 @@ func TestClaudeDelayedTamperRejected(t *testing.T) {
 func TestClaudeIncompleteOutput(t *testing.T) {
 	h := newClaudeHarness(t)
 	t.Setenv("FAKE_CLAUDE_BAD_OUTPUT", "1")
-	code, _, err := h.review("claude", "QA", "确认改动正确")
+	code, _, err := h.review("claude", "PMQA", "确认改动正确")
 	if code != 1 || !strings.Contains(err, "did not complete with review text") {
 		t.Fatalf("code=%d err=%q", code, err)
 	}
@@ -202,7 +208,7 @@ func TestClaudeSpecSnapshot(t *testing.T) {
 	if err := os.WriteFile(spec, []byte("# 任务契约\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
-	code, _, err := h.review("claude", "PM", spec)
+	code, _, err := h.review("claude", "PMQA", spec)
 	if code != 0 {
 		t.Fatalf("code=%d err=%s", code, err)
 	}
@@ -218,7 +224,7 @@ func TestClaudeSpecSnapshot(t *testing.T) {
 func TestClaudeIncremental(t *testing.T) {
 	h := newClaudeHarness(t)
 	fixed := commitFile(t, h.repo, "c.txt", "fix\n", "修复")
-	code, _, err := captureRun(t, []string{"claude", h.repo, h.base, fixed, "PM", "确认改动正确", "Prior findings: PM-001 closed by c.txt", h.head})
+	code, _, err := captureRun(t, []string{"claude", h.repo, h.base, fixed, "PMQA", "确认改动正确", "Prior findings: PM-001 closed by c.txt", h.head})
 	if code != 0 {
 		t.Fatalf("code=%d err=%s", code, err)
 	}

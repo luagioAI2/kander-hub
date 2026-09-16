@@ -10,12 +10,13 @@
 
 ## 1. 快速开始
 
-运行需要 Git, 以及 Codex, Claude, Grok 或 Cursor 中至少一个.
+运行需要 Git, 以及 Codex, Claude, Grok, Cursor 或 Pi 中至少一个.
 
 **macOS** — 使用 Homebrew 安装:
 
 ```sh
 brew install dualface/tap/kander
+
 kander
 ```
 
@@ -24,6 +25,7 @@ kander
 ```sh
 ARCH=$(uname -m); [ "$ARCH" = x86_64 ] && ARCH=amd64; [ "$ARCH" = aarch64 ] && ARCH=arm64
 curl -fsSL "https://github.com/dualface/kander/releases/latest/download/kander-linux-${ARCH}.tar.gz" | tar xz
+
 ./kander
 ```
 
@@ -44,12 +46,16 @@ kander
 
 ![终端看板](docs/kanban-screenshot-01.png)
 
-在 `o` → 界面 → 主题中选择 **Tide**、**Dusk**、**Slate Dark** 或 **Slate Light**。Slate 深浅两款搭配 herdr 等灰蓝色终端外层；原有主题和默认设置保持可用。
-
 > 上图看板内容来自我的真实项目 [https://quicktui.ai](https://quicktui.ai). QuickTUI 是一个远程操作电脑上各种 Agent 的工具, 支持 iOS/Android/macOS/Linux/Windows, 免费使用.
 
 进阶阅读: 幻灯片 [如何高效推进任务](docs/how-to-advance-tasks-efficiently-cn.pdf) (PDF).
 
-## 2. 许可
+## 2. GitHub 集成
+
+把项目关联到 GitHub 仓库需要 [GitHub CLI](https://cli.github.com/)（`gh`）。Kander 不会索要、读取或保存 token，只复用 `gh` 已管理的凭据。
+
+在终端看板中按 `g` 会以弹窗形式打开 GitHub Issue 列表。
+
+## 3. 许可
 
 本项目使用 MIT License, 见 [LICENSE](LICENSE).

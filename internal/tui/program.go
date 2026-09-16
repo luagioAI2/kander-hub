@@ -115,15 +115,18 @@ func (p program) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		oldWidth, oldHeight := p.app.Width, p.app.Height
 		p.app.Width, p.app.Height = event.Width, event.Height
 		p.app.clampDetailCursor()
+		p.app.resizeTaskActionForm()
+		p.app.resizeChat()
 		if p.app.Options != nil && (oldWidth != event.Width || oldHeight != event.Height) {
 			return p, p.app.Options.resizeForm()
 		}
 		return p, nil
 	case tickMsg:
 		if p.app.Now().Sub(p.app.LastRefresh) >= time.Duration(p.app.RefreshSecs)*time.Second {
-			p.app.refreshBoard()
+			p.app.requestBoardRefresh(false)
 		}
-		return p, tickCmd()
+		p.app.issuesTick()
+		return p, tea.Batch(tickCmd(), p.app.takePending())
 	case shellDoneMsg:
 		return p, p.app.takePending()
 	case workMsg:
@@ -156,6 +159,9 @@ func (a *App) takePending() tea.Cmd {
 		work := a.pendingWork
 		a.pendingWork = nil
 		cmds = append(cmds, func() tea.Msg { return workMsg{payload: work()} })
+	}
+	if cmd := a.takeQueuedReads(); cmd != nil {
+		cmds = append(cmds, cmd)
 	}
 	if len(cmds) == 0 {
 		return nil
@@ -223,6 +229,8 @@ func mapKey(event tea.KeyMsg) string {
 		return "ctrl-u"
 	case tea.KeyCtrlD:
 		return "ctrl-d"
+	case tea.KeyCtrlS:
+		return "ctrl-s"
 	case tea.KeyCtrlC:
 		return "ctrl-c"
 	}

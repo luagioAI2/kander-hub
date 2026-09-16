@@ -1,15 +1,17 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"time"
-	"unicode"
 
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/dualface/kander/internal/board"
 	"github.com/dualface/kander/internal/config"
 	"github.com/dualface/kander/internal/focus"
+	"github.com/dualface/kander/internal/issue"
 	"github.com/dualface/kander/internal/launch"
 	"github.com/dualface/kander/internal/menu"
 )
@@ -32,6 +34,9 @@ type boardHit struct {
 }
 
 type App struct {
+	TaskActions       *taskActions
+	LoadTaskActions   func(string) (taskActionSource, error)
+	actionSequence    uint64
 	Width, Height     int
 	Model             *BoardModel
 	RefreshSecs       int
@@ -41,6 +46,8 @@ type App struct {
 	Context           pageContext
 	GetBoard          func() (BoardPayload, error)
 	GetTask           func(string) (Task, error)
+	GetBoardCtx       func(context.Context) (BoardPayload, error)
+	GetTaskCtx        func(context.Context, string) (Task, error)
 	CopyFn            copyFn
 	FocusWindow       focusFn
 	PrepareStart      func(string) (startRequest, error)
@@ -51,6 +58,38 @@ type App struct {
 	focusRunning      bool
 	PersistColumns    persistFn
 	Now               func() time.Time
+	// PrepareTriage resolves the configured agent and launcher of an unstarted
+	// takeover session; TriageIssue prepares the evidence and starts it through
+	// the shared issue.StartTriage path, the same one `kander issue triage`
+	// uses. cmd.go binds both and tests inject fakes.
+	PrepareTriage func() (launch.TriagePreview, error)
+	ResultIssue   func(ctx context.Context, repository issue.Repository, number int, options issue.TriageOptions) (issue.TriageOutcome, error)
+	TriageIssue   func(ctx context.Context, repository issue.Repository, number int, options issue.TriageOptions) (issue.TriageOutcome, error)
+	// PrepareChat resolves the agent and launcher of the chat box; StartChat
+	// starts one card-less session for a typed message. cmd.go binds StartChat
+	// when a board exists. A missing board offers kander init instead of
+	// leaving StartChat nil for the whole process.
+	PrepareChat func() (launch.ChatPreview, error)
+	StartChat   func(message string) (launch.ChatResult, error)
+	// missingBoard is set when startup could not locate kanban/. Board-requiring
+	// actions then confirm creating it through InitBoard, the same path as
+	// kander init. AttachBoard rebinds board-backed operations after success.
+	missingBoard     bool
+	boardRoot        string
+	summaries        *board.SummaryIndex
+	BoardInit        *boardInitState
+	boardInitSeq     uint64
+	PreviewBoardInit func() (string, error)
+	InitBoard        func() (string, error)
+	AttachBoard      func(root string)
+	// While Chat is non-nil the chat box covers the board and owns the input;
+	// chatDraft keeps the text of a closed chat box for the next open.
+	Chat      *chatBox
+	chatSeq   uint64
+	chatDraft string
+	// While Takeover is non-nil it covers the issues overlay and owns the input.
+	Takeover    *takeoverState
+	takeoverSeq uint64
 
 	Searching        bool
 	Detail           *Task
@@ -59,6 +98,13 @@ type App struct {
 	DetailQuery      string
 	DetailMatchIndex int
 	DetailPendingG   bool
+	DetailCount      int
+	DetailCountOn    bool
+	DetailOp         string
+	DetailFindWait   string
+	DetailObjWait    string
+	DetailLastFind   string
+	DetailLastChar   rune
 	DetailSelectMode string
 	DetailAnchor     *[2]int
 	DetailCursor     [2]int
@@ -82,9 +128,46 @@ type App struct {
 	Session *menu.Session
 	// While Help is true the key reference overlay covers the board.
 	Help bool
+	// welcomeDismissed hides the empty-board welcome overlay for this process.
+	welcomeDismissed bool
+	// While Issues is non-nil the GitHub issues overlay covers the board; it
+	// owns its own filters, selection and scrolling and never touches the board
+	// model, so closing it leaves the board exactly as it was.
+	Issues *issuesState
+	// IssueProvider builds the read-only issue provider; cmd.go binds it from
+	// internal/cli, while tests inject a fake.
+	IssueProvider func() issue.IssueProvider
+	// ImportIssue runs one issue import through the shared service; cmd.go
+	// binds it from internal/cli and tests inject a fake.
+	ImportIssue func(ctx context.Context, repository issue.Repository, number int, options issue.ImportOptions) (issue.ImportResult, error)
+	// ImportIndex reads the board cards that already carry an imported source.
+	ImportIndex func() (issue.Index, error)
+	// LoadIssueCache returns the cached snapshot of one issue; ok=false is a
+	// miss. cmd.go binds it to the machine-local cache below the board.
+	LoadIssueCache func(repository issue.Repository, number int) (issue.IssueSnapshot, bool)
+	// SaveIssueCache stores one fetched snapshot in the machine-local cache. The
+	// cache is best effort; a failed write never blocks the view.
+	SaveIssueCache func(snapshot issue.IssueSnapshot) error
+	// OpenBrowser hands one validated issue URL to the platform opener.
+	OpenBrowser     func(string) error
+	issuesRepo      *issue.Repository
+	issuesListSeq   uint64
+	issuesDetailSeq uint64
+	issuesImportSeq uint64
+	issuesIndexSeq  uint64
 	// pendingShell is an action that must hand the terminal back; pendingWork is a background task.
 	pendingShell func()
 	pendingWork  func() any
+	// board/detail snapshot reads use a dedicated scheduler so they do not occupy
+	// pendingWork (start, Issues, chat, task actions) and cannot block Update.
+	boardReadSeq      uint64
+	boardInFlightSeq  uint64
+	boardReadQueued   bool
+	boardReadCancel   context.CancelFunc
+	detailReadSeq     uint64
+	detailInFlightSeq uint64
+	detailQueuedID    string
+	detailReadCancel  context.CancelFunc
 	// optionsLoadSeq identifies the in-flight Options config reload so a stale result cannot land on a newer panel.
 	optionsLoadSeq uint64
 
@@ -92,11 +175,17 @@ type App struct {
 	detailCache detailRender
 }
 
-// Update is the message entry point of App: the options panel takes over while open, otherwise the board and detail view handle it.
+// Update routes messages to the active popup, board, or detail view.
 func (a *App) Update(msg tea.Msg) tea.Cmd {
-	if event, ok := msg.(tea.KeyMsg); ok && mapKey(event) == "ctrl-c" && a.StartConfirmation == nil {
+	if event, ok := msg.(tea.KeyMsg); ok && mapKey(event) == "ctrl-c" && !a.confirmCapturesKeys() && (a.TaskActions == nil || !a.TaskActions.running) && (a.Chat == nil || a.Chat.phase != chatRunning) {
 		a.requestQuit()
 		return nil
+	}
+	if a.TaskActions != nil {
+		return a.updateTaskActions(msg)
+	}
+	if a.Chat != nil {
+		return a.updateChat(msg)
 	}
 	if a.Options != nil {
 		if event, ok := msg.(tea.MouseMsg); ok {
@@ -116,7 +205,7 @@ func (a *App) Update(msg tea.Msg) tea.Cmd {
 	return nil
 }
 
-// View renders the whole screen: the board or the detail view underneath, with the options popup on top.
+// View renders the board or detail view with the active popup on top.
 func (a *App) View() string {
 	var base string
 	switch {
@@ -127,20 +216,67 @@ func (a *App) View() string {
 		a.ShowCursor = a.Searching
 		base = a.renderBoardView()
 	}
+	if a.Issues != nil {
+		a.ShowCursor = a.Issues.editing != ""
+	}
+	if a.Takeover != nil {
+		a.ShowCursor = false
+	}
 	h, w := a.size()
 	p := themePalette(a.Theme)
 	switch {
+	case a.TaskActions != nil:
+		a.ShowCursor = false
+		box, popup := a.renderTaskActions()
+		base = overlay(base, popup, box.X, box.Y, p)
+	case a.Chat != nil:
+		a.ShowCursor = false
+		box, popup := a.renderChat()
+		base = overlay(base, popup, box.X, box.Y, p)
 	case a.Options != nil:
 		box, popup := a.Options.view()
 		base = overlay(base, popup, box.X, box.Y, p)
+		if a.Options.confirm != nil {
+			a.ShowCursor = false
+			cbox, cpopup := a.Options.renderConfirm()
+			base = overlay(base, cpopup, cbox.X, cbox.Y, p)
+		}
 	case a.StartConfirmation != nil:
 		box, popup := a.renderStartConfirmation()
 		base = overlay(base, popup, box.X, box.Y, p)
+	case a.BoardInit != nil:
+		if a.Issues != nil {
+			issuesBox, issuesPopup := a.renderIssues()
+			base = overlay(base, issuesPopup, issuesBox.X, issuesBox.Y, p)
+		}
+		box, popup := a.renderBoardInit()
+		base = overlay(base, popup, box.X, box.Y, p)
+	case a.Takeover != nil:
+		if a.Issues != nil {
+			issuesBox, issuesPopup := a.renderIssues()
+			base = overlay(base, issuesPopup, issuesBox.X, issuesBox.Y, p)
+		}
+		box, popup := a.renderTakeover()
+		base = overlay(base, popup, box.X, box.Y, p)
+		if a.Help {
+			helpBox, helpPopup := a.renderHelp()
+			base = overlay(base, helpPopup, helpBox.X, helpBox.Y, p)
+		}
+	case a.Issues != nil:
+		box, popup := a.renderIssues()
+		base = overlay(base, popup, box.X, box.Y, p)
+		if a.Help {
+			helpBox, helpPopup := a.renderHelp()
+			base = overlay(base, helpPopup, helpBox.X, helpBox.Y, p)
+		}
 	case a.Help:
 		box, popup := a.renderHelp()
 		base = overlay(base, popup, box.X, box.Y, p)
+	case a.shouldShowWelcome():
+		box, popup := a.renderWelcome()
+		base = overlay(base, popup, box.X, box.Y, p)
 	}
-	if a.Options == nil && !a.Help && a.StartConfirmation == nil && a.startNoticeOverflows(w) {
+	if a.TaskActions == nil && a.Chat == nil && a.Options == nil && !a.Help && a.StartConfirmation == nil && a.BoardInit == nil && !a.shouldShowWelcome() && a.startNoticeOverflows(w) {
 		box, popup := a.renderStartPopup([]string{a.startNotice.full})
 		base = overlay(base, popup, box.X, box.Y, p)
 	}
@@ -155,24 +291,25 @@ func newApp(single bool, refresh int, ctx pageContext, getBoard func() (BoardPay
 		persist = saveColumns
 	}
 	return &App{
-		Model:          newBoardModel(single),
-		RefreshSecs:    refresh,
-		Theme:          theme,
-		Columns:        clampColumns(columns),
-		MinColumnWidth: minColumnWidth,
-		Context:        ctx,
-		GetBoard:       getBoard,
-		GetTask:        getTask,
-		CopyFn:         copy,
-		FocusWindow:    focus.Window,
-		PrepareStart:   prepareTaskStart,
-		StartTask:      runTaskStart,
-		PersistColumns: persist,
-		Now:            time.Now,
-		Running:        true,
-		Glyphs:         map[string]string{"vbar": "│", "bar": "▎", "hbar": "─", "dot": "·", "left": "‹", "right": "›"},
-		LastRefresh:    time.Now(),
-		detailView:     newDetailViewport(),
+		Model:           newBoardModel(single),
+		RefreshSecs:     refresh,
+		Theme:           theme,
+		Columns:         clampColumns(columns),
+		MinColumnWidth:  minColumnWidth,
+		Context:         ctx,
+		GetBoard:        getBoard,
+		GetTask:         getTask,
+		CopyFn:          copy,
+		LoadTaskActions: loadTaskActionSource,
+		FocusWindow:     focus.Window,
+		PrepareStart:    prepareTaskStart,
+		StartTask:       runTaskStart,
+		PersistColumns:  persist,
+		Now:             time.Now,
+		Running:         true,
+		Glyphs:          map[string]string{"vbar": "│", "bar": "▎", "hbar": "─", "dot": "·", "left": "‹", "right": "›"},
+		LastRefresh:     time.Now(),
+		detailView:      newDetailViewport(),
 	}
 }
 
@@ -186,86 +323,11 @@ func (a *App) size() (h, w int) {
 	return a.Height, a.Width
 }
 
-func (a *App) refreshBoard() bool {
-	previous := a.Model.RefreshError
-	payload, err := a.GetBoard()
-	if err != nil {
-		a.Model.RefreshError = err.Error()
-		a.LastRefresh = a.Now()
-		return a.Model.RefreshError != previous
-	}
-	changed := a.Model.SetBoard(payload)
-	a.showJournalWarnings(payload.Warnings)
-	a.LastRefresh = a.Now()
-	return changed || a.refreshOpenDetail()
-}
-
-func (a *App) refreshOpenDetail() bool {
-	if a.Detail == nil {
-		return false
-	}
-	taskID := a.Detail.TaskID
-	if taskID == "" {
-		return false
-	}
-	previous := a.Model.DetailError
-	next, err := a.GetTask(taskID)
-	if err != nil {
-		a.Model.DetailError = err.Error()
-		return a.Model.DetailError != previous
-	}
-	a.Model.DetailError = ""
-	changed := a.Detail.Document != next.Document ||
-		a.Detail.Title != next.Title ||
-		a.Detail.Time != next.Time ||
-		a.Detail.State != next.State ||
-		a.Detail.Assignee != next.Assignee ||
-		a.Detail.Kind != next.Kind ||
-		a.Detail.TaskGroup != next.TaskGroup ||
-		a.Detail.Type != next.Type
-	a.Detail = &next
-	a.showJournalWarnings(next.Warnings)
-	a.clampDetailCursor()
-	matches := a.detailMatches(nil)
-	if len(matches) > 0 && a.DetailMatchIndex > len(matches)-1 {
-		a.DetailMatchIndex = len(matches) - 1
-	} else if len(matches) == 0 {
-		a.DetailMatchIndex = 0
-	}
-	return changed || previous != ""
-}
-
-func (a *App) openDetail() {
-	selected := a.Model.SelectedTask()
-	if selected == nil {
-		return
-	}
-	task, err := a.GetTask(selected.TaskID)
-	if err != nil {
-		a.Model.DetailError = err.Error()
-		return
-	}
-	a.Detail = &task
-	a.showJournalWarnings(task.Warnings)
-	a.DetailScroll = 0
-	a.DetailCursor = [2]int{0, 0}
-	a.resetDetailSearch()
-	a.resetMouseSelection()
-	a.Model.DetailError = ""
-}
-
-func (a *App) closeDetail() {
-	a.Detail = nil
-	a.DetailScroll = 0
-	a.resetDetailSearch()
-	a.resetMouseSelection()
-}
-
 func (a *App) resetDetailSearch() {
 	a.DetailSearching = false
 	a.DetailQuery = ""
 	a.DetailMatchIndex = 0
-	a.DetailPendingG = false
+	a.resetDetailPending()
 	a.resetDetailSelection()
 	a.ShowCursor = false
 }
@@ -478,8 +540,7 @@ func (a *App) applyDetailSearch() {
 }
 
 func (a *App) pageSize() int {
-	h, _ := a.size()
-	n := (h - bodyTop) / cardHeight
+	n := a.boardBodyHeight() / cardHeight
 	if n < 1 {
 		return 1
 	}
@@ -573,17 +634,19 @@ func (a *App) handleBoardKey(key string) {
 	case "=", "+":
 		a.adjustColumns(1)
 	case "r", "R":
-		a.refreshBoard()
+		a.requestBoardRefresh(true)
 	case "o", "O":
 		a.openOptions()
 	case "?":
 		a.Help = true
 	case "y":
 		a.copySelectedTaskID()
-	case "s":
-		a.confirmSelectedStart()
+	case "m":
+		a.openTaskActions()
 	case "g":
-		a.focusSelectedTask()
+		a.openIssues()
+	case "c":
+		a.openChat()
 	case "enter":
 		a.openDetail()
 	}
@@ -613,211 +676,17 @@ func (a *App) handleSearchKey(key string) {
 	}
 }
 
-func (a *App) handleDetailSearchKey(key string) {
-	switch key {
-	case "enter":
-		a.applyDetailSearch()
-	case "esc":
-		a.DetailQuery = ""
-		a.DetailMatchIndex = 0
-		a.DetailSearching = false
-		a.ShowCursor = false
-	case "backspace":
-		if a.DetailQuery != "" {
-			runes := []rune(a.DetailQuery)
-			a.DetailQuery = string(runes[:len(runes)-1])
-		}
-	default:
-		if isPrintableKey(key) {
-			a.DetailQuery += key
-		}
-	}
-}
-
-func isPrintableKey(key string) bool {
-	if key == "" || len([]rune(key)) != 1 {
-		return false
-	}
-	r := []rune(key)[0]
-	return unicode.IsPrint(r)
-}
-
-func (a *App) detailSelectionActive() bool {
-	return a.DetailSelectMode != "" && a.DetailAnchor != nil
-}
-
-func (a *App) detailToggleSelect(mode string) {
-	if a.DetailSelectMode == mode {
-		a.resetDetailSelection()
-		return
-	}
-	a.DetailSelectMode = mode
-	a.resetMouseSelection()
-	line, col := a.DetailCursor[0], a.DetailCursor[1]
-	lines := a.detailLines()
-	if mode == "line" {
-		if len(lines) == 0 {
-			a.DetailAnchor = &[2]int{0, 0}
-			a.DetailCursor = [2]int{0, 0}
-			return
-		}
-		if line > len(lines)-1 {
-			line = len(lines) - 1
-		}
-		if line < 0 {
-			line = 0
-		}
-		a.DetailAnchor = &[2]int{line, 0}
-		a.DetailCursor = [2]int{line, runeCount(lines[line])}
-		return
-	}
-	a.DetailAnchor = &[2]int{line, col}
-}
-
-func (a *App) detailYank() {
-	if a.DetailSelectMode == "" || a.DetailAnchor == nil {
-		return
-	}
-	lines := a.detailLines()
-	var text string
-	if a.DetailSelectMode == "line" {
-		text = extractLineSelection(lines, *a.DetailAnchor, a.DetailCursor)
-	} else {
-		text = extractCharSelection(lines, *a.DetailAnchor, a.DetailCursor)
-	}
-	if text != "" {
-		a.copyText(text)
-	}
-	a.resetDetailSelection()
-}
-
-func (a *App) detailMoveCursor(deltaLine, deltaCol int) {
-	lines := a.detailLines()
-	if len(lines) == 0 {
-		return
-	}
-	line, col := a.DetailCursor[0], a.DetailCursor[1]
-	line += deltaLine
-	if line < 0 {
-		line = 0
-	}
-	if line > len(lines)-1 {
-		line = len(lines) - 1
-	}
-	lineText := lines[line]
-	if deltaCol != 0 {
-		col += deltaCol
-		n := runeCount(lineText)
-		if col < 0 {
-			col = 0
-		}
-		if col > n {
-			col = n
-		}
-	} else if deltaLine != 0 {
-		n := runeCount(lineText)
-		if col > n {
-			col = n
-		}
-	}
-	a.DetailCursor = [2]int{line, col}
-	a.ensureDetailCursorVisible(lines)
-}
-
-func (a *App) handleDetailKey(key string) {
-	if a.DetailSearching {
-		a.handleDetailSearchKey(key)
-		return
-	}
-	if a.DetailPendingG {
-		a.DetailPendingG = false
-		if key == "g" {
-			a.DetailScroll = 0
-			a.DetailCursor = [2]int{0, 0}
-			return
-		}
-	}
-	switch key {
-	case "up", "k", "K":
-		a.detailMoveCursor(-1, 0)
-		return
-	case "down", "j", "J":
-		a.detailMoveCursor(1, 0)
-		return
-	case "left", "h", "H":
-		a.detailMoveCursor(0, -1)
-		return
-	case "right", "l", "L":
-		a.detailMoveCursor(0, 1)
-		return
-	}
-	if a.detailSelectionActive() {
-		switch key {
-		case "y":
-			a.detailYank()
-			return
-		case "v":
-			a.detailToggleSelect("char")
-			return
-		case "V":
-			a.detailToggleSelect("line")
-			return
-		case "q", "Q", "esc", "backspace":
-			a.resetDetailSelection()
-			return
-		}
-	}
-	pageHeight := a.detailBodyHeight()
-	half := pageHeight / 2
-	if half < 1 {
-		half = 1
-	}
-	switch key {
-	case "q", "Q", "esc", "backspace":
-		a.closeDetail()
-	case "pgup", "ctrl-b":
-		a.scrollDetailBy(-pageHeight)
-	case "pgdn", "ctrl-f":
-		a.scrollDetailBy(pageHeight)
-	case "ctrl-u":
-		a.scrollDetailBy(-half)
-	case "ctrl-d":
-		a.scrollDetailBy(half)
-	case "g":
-		a.DetailPendingG = true
-	case "G", "end":
-		lines := a.detailLines()
-		if len(lines) > 0 {
-			last := len(lines) - 1
-			a.DetailCursor = [2]int{last, runeCount(lines[last])}
-		}
-		a.DetailScroll = 1 << 30
-		a.ensureDetailCursorVisible(a.detailLines())
-	case "home":
-		a.DetailCursor = [2]int{0, 0}
-		a.DetailScroll = 0
-	case "/":
-		a.DetailSearching = true
-		a.DetailPendingG = false
-		a.ShowCursor = true
-	case "?":
-		a.Help = true
-	case "n":
-		a.jumpDetailMatch(1)
-	case "N":
-		a.jumpDetailMatch(-1)
-	case "v":
-		a.detailToggleSelect("char")
-	case "V":
-		a.detailToggleSelect("line")
-	case "y":
-		a.detailYank()
-	}
-}
-
 func (a *App) HandleKey(key string) {
 	if a.StartConfirmation != nil {
 		a.handleStartConfirmation(key)
+		return
+	}
+	if a.BoardInit != nil {
+		a.handleBoardInitKey(key)
+		return
+	}
+	if a.Takeover != nil {
+		a.handleTakeoverKey(key)
 		return
 	}
 	if key == "ctrl-c" {
@@ -827,6 +696,20 @@ func (a *App) HandleKey(key string) {
 	// The help overlay is read-only and any key closes it.
 	if a.Help {
 		a.Help = false
+		return
+	}
+	if a.shouldShowWelcome() {
+		switch key {
+		case "esc":
+			a.dismissWelcome()
+			return
+		case "q", "Q", "c", "g", "?", "o", "O", "r", "R":
+		default:
+			return
+		}
+	}
+	if a.Issues != nil {
+		a.handleIssuesKey(key)
 		return
 	}
 	if a.Detail != nil {

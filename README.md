@@ -10,12 +10,13 @@ One person schedules multiple AI agents with a kanban board.
 
 ## 1. Quick Start
 
-Running requires Git, plus at least one of Codex, Claude, Grok, or Cursor.
+Running requires Git, plus at least one of Codex, Claude, Grok, Cursor, or Pi.
 
 **macOS** — install with Homebrew:
 
 ```sh
 brew install dualface/tap/kander
+
 kander
 ```
 
@@ -24,6 +25,7 @@ kander
 ```sh
 ARCH=$(uname -m); [ "$ARCH" = x86_64 ] && ARCH=amd64; [ "$ARCH" = aarch64 ] && ARCH=arm64
 curl -fsSL "https://github.com/dualface/kander/releases/latest/download/kander-linux-${ARCH}.tar.gz" | tar xz
+
 ./kander
 ```
 
@@ -44,12 +46,16 @@ kander
 
 ![Terminal kanban](docs/kanban-screenshot-01.png)
 
-Choose **Tide**, **Dusk**, **Slate Dark**, or **Slate Light** in `o` → Interface → Theme. The Slate pair matches a gray-blue terminal host such as herdr; existing themes and the default remain available.
-
 > The board contents above come from my real project [https://quicktui.ai](https://quicktui.ai). QuickTUI is a tool for remotely operating the agents on your computer; it supports iOS/Android/macOS/Linux/Windows and is free to use.
 
 Further reading: the slides [How to Advance Tasks Efficiently](docs/how-to-advance-tasks-efficiently-en.pdf) (PDF).
 
-## 2. License
+## 2. GitHub Integration
+
+Linking a project to a GitHub repository needs the [GitHub CLI](https://cli.github.com/) (`gh`). Kander never asks for, reads, or stores a token; it reuses the credentials `gh` already manages.
+
+On the terminal board, press `g` to open the GitHub issue list in an overlay.
+
+## 3. License
 
 This project is under the MIT License; see [LICENSE](LICENSE).

@@ -30,9 +30,8 @@ const (
 
 var (
 	TaskScales       = []string{"large", "small"}
-	ReviewRoles      = []string{"PM", "CSA", "Hacker", "QA"}
+	ReviewRoles      = []string{"PMQA", "Security"}
 	ReviewStageModes = []string{"auto", "skip", "required"}
-	Launchers        = []string{"auto", "tmux", "tmux-session", "herdr", "foreground", "console"}
 	Languages        = []string{"cn", "en", "ja"}
 	TUIThemes        = []string{"auto", "light", "light-warm", "light-contrast", "dark", "dark-soft", "dark-contrast", "tide", "dusk", "slate-dark", "slate-light"}
 )
@@ -109,12 +108,15 @@ type InstallPaths struct {
 }
 
 // Models matches the models section of the onevoke schema.
-// ReviewRoles holds per-role overrides: an empty value means the role inherits the value of its selected reviewer,
-// so all four roles can use different models and reasoning efforts even when they select the same reviewer.
+// ReviewRoles holds per-role overrides. Empty values inherit the selected reviewer's
+// models.review entry. Prefer large_*/small_* when set; otherwise fall back to the
+// shared model/effort keys for legacy entries. A large_agent/small_agent binding
+// restricts that scale's overrides to its reviewer and disables legacy fallback.
 type Models struct {
 	Kanban      map[string]map[string]string `json:"kanban"`
 	Review      map[string]map[string]string `json:"review"`
 	ReviewRoles map[string]map[string]string `json:"review_roles"`
+	Chat        map[string]map[string]string `json:"chat"`
 }
 
 // TUI holds the persistent terminal UI preferences. Command-line flags only affect the current run and never change these values.
@@ -132,8 +134,9 @@ type Config struct {
 	WelcomeComplete bool                         `json:"welcome_complete"`
 	KanbanAgent     string                       `json:"kanban_agent"`
 	KanbanAgents    map[string]string            `json:"kanban_agents"`
+	ChatAgent       string                       `json:"chat_agent"`
 	Launcher        string                       `json:"launcher"`
-	Reviewers       map[string]string            `json:"reviewers"`
+	Reviewers       map[string]map[string]string `json:"reviewers"`
 	ReviewStages    map[string]map[string]string `json:"review_stages"`
 	Rules           Rules                        `json:"rules"`
 	Models          Models                       `json:"models"`
@@ -151,13 +154,15 @@ func Clone(src *Config) *Config {
 	out := *src
 	out.Agents = CloneAgents(src.Agents)
 	out.KanbanAgents = cloneStringMap(src.KanbanAgents)
-	out.Reviewers = cloneStringMap(src.Reviewers)
+	out.ChatAgent = src.ChatAgent
+	out.Reviewers = cloneNested(src.Reviewers)
 	out.ReviewStages = cloneNested(src.ReviewStages)
 	out.Rules = src.Rules.Clone()
 	out.Models = Models{
 		Kanban:      cloneNested(src.Models.Kanban),
 		Review:      cloneNested(src.Models.Review),
 		ReviewRoles: cloneNested(src.Models.ReviewRoles),
+		Chat:        cloneNested(src.Models.Chat),
 	}
 	return &out
 }
@@ -182,7 +187,12 @@ func defaultReviewRoles() map[string]map[string]string {
 	out := make(map[string]map[string]string, len(ReviewRoles))
 	for _, role := range ReviewRoles {
 		// Empty by default: the role inherits the value of its reviewer.
-		out[role] = map[string]string{"model": "", "effort": ""}
+		out[role] = map[string]string{
+			"model": "", "effort": "",
+			"large_model": "", "small_model": "",
+			"large_effort": "", "small_effort": "",
+			"large_agent": "", "small_agent": "",
+		}
 	}
 	return out
 }
@@ -192,6 +202,7 @@ func DefaultModels() Models {
 		Kanban:      cloneNested(kanbanModelDefaults()),
 		Review:      cloneNested(reviewModelDefaults()),
 		ReviewRoles: defaultReviewRoles(),
+		Chat:        cloneNested(chatModelDefaults()),
 	}
 }
 
@@ -204,20 +215,30 @@ func DefaultTUI() TUI {
 	}
 }
 
-// ReviewModelFor returns the model and reasoning effort actually in force for a review role.
-// An empty role override falls back to the agent's own value; the agent comes from the caller because
-// kander review may name a reviewer explicitly, which need not match the reviewer configured for that role.
-func ReviewModelFor(cfg *Config, agent, role string) (model, effort string) {
+// ReviewModelFor resolves overrides only for their owning reviewer. Bound entries
+// inherit empty values directly from that agent, never from legacy role keys.
+// Unbound legacy entries belong to the configured reviewer at the requested scale.
+func ReviewModelFor(cfg *Config, agent, role, scale string) (model, effort string) {
 	if cfg == nil {
 		return "", ""
 	}
 	agentEntry := cfg.Models.Review[agent]
 	roleEntry := cfg.Models.ReviewRoles[role]
-	model = roleEntry["model"]
+	owner := roleEntry[scale+"_agent"]
+	if owner != "" && owner != agent || owner == "" && ReviewerFor(cfg, scale, role) != agent {
+		return agentEntry["model"], agentEntry["effort"]
+	}
+	model = roleEntry[scale+"_model"]
+	if model == "" && owner == "" {
+		model = roleEntry["model"]
+	}
 	if model == "" {
 		model = agentEntry["model"]
 	}
-	effort = roleEntry["effort"]
+	effort = roleEntry[scale+"_effort"]
+	if effort == "" && owner == "" {
+		effort = roleEntry["effort"]
+	}
 	if effort == "" {
 		effort = agentEntry["effort"]
 	}
@@ -237,17 +258,14 @@ func DefaultConfig() *Config {
 	for _, scale := range TaskScales {
 		agents[scale] = agent
 	}
-	reviewers := make(map[string]string, len(ReviewRoles))
-	for _, role := range ReviewRoles {
-		reviewers[role] = agent
-	}
 	return &Config{
 		SchemaVersion:   SchemaVersion,
 		WelcomeComplete: false,
 		KanbanAgent:     agent,
 		KanbanAgents:    agents,
+		ChatAgent:       agent,
 		Launcher:        DefaultLauncher(),
-		Reviewers:       reviewers,
+		Reviewers:       DefaultReviewers(),
 		ReviewStages:    DefaultReviewStages(),
 		Rules:           DefaultRules(true),
 		Models:          DefaultModels(),
@@ -333,7 +351,7 @@ func launcherPlatformError() *Error {
 }
 
 func validateLauncher(value any) (string, error) {
-	launcher, err := validateChoice(value, Launchers, "launcher")
+	launcher, err := validateChoice(value, LauncherNames(), "launcher")
 	if err != nil {
 		return "", err
 	}
@@ -405,8 +423,11 @@ func KanbanAgentFor(cfg *Config, kind string) (string, error) {
 	return cfg.KanbanAgents[kind], nil
 }
 
-// ExecutionAgentsInUse lists the execution agents that will actually be launched, deduplicated, large task first.
-func ExecutionAgentsInUse(cfg *Config) []string {
+// KanbanAgentsInUse lists the execution agents bound to task scales,
+// deduplicated, large first then small. kander config kanban-model lines and
+// the Options summary use this set so a Chat-only agent is not labeled as a
+// kanban model.
+func KanbanAgentsInUse(cfg *Config) []string {
 	seen := map[string]struct{}{}
 	var out []string
 	for _, scale := range TaskScales {
@@ -416,6 +437,23 @@ func ExecutionAgentsInUse(cfg *Config) []string {
 		}
 		seen[agent] = struct{}{}
 		out = append(out, agent)
+	}
+	return out
+}
+
+// ExecutionAgentsInUse lists the execution agents that will actually be launched,
+// deduplicated, large task first, then small, then the Chat Agent when it is
+// not already in that set. Doctor and rules integration use this inventory.
+func ExecutionAgentsInUse(cfg *Config) []string {
+	out := KanbanAgentsInUse(cfg)
+	seen := map[string]struct{}{}
+	for _, agent := range out {
+		seen[agent] = struct{}{}
+	}
+	if chat := ChatAgentFor(cfg); chat != "" {
+		if _, ok := seen[chat]; !ok {
+			out = append(out, chat)
+		}
 	}
 	return out
 }
@@ -434,9 +472,10 @@ func validateModels(raw any, definitions ...map[string]AgentDefinition) (Models,
 	if !ok {
 		return Models{}, configErrorf("config.models_must_be_a_json_object")
 	}
+	models.Chat = map[string]map[string]string{}
 	var unknown []string
 	for key := range obj {
-		if key != "kanban" && key != "review" && key != "review_roles" {
+		if key != "kanban" && key != "review" && key != "review_roles" && key != "chat" {
 			unknown = append(unknown, key)
 		}
 	}
@@ -467,6 +506,19 @@ func validateModels(raw any, definitions ...map[string]AgentDefinition) (Models,
 			return Models{}, configErrorf(
 				"config.models_must_be_a_json_object_2", section.name,
 			)
+		}
+		if section.name == "review_roles" {
+			folded, err := validateAndFoldReviewRoleModels(provided)
+			if err != nil {
+				return Models{}, err
+			}
+			for role, entry := range folded {
+				fields := section.dest[role]
+				for field, text := range entry {
+					fields[field] = text
+				}
+			}
+			continue
 		}
 		allowed := map[string]struct{}{}
 		for _, agent := range section.agents {
@@ -522,9 +574,27 @@ func validateModels(raw any, definitions ...map[string]AgentDefinition) (Models,
 						"config.models_must_not_contain_line_breaks_or_nul", section.name, agent, field,
 					)
 				}
+				if section.name == "review_roles" && strings.HasSuffix(field, "_agent") && text != "" && !ValidAgentName(text) {
+					return Models{}, agentDefinitionError("models.review_roles."+agent+"."+field, Text("config.agent_name"))
+				}
 				fields[field] = text
 			}
 		}
+	}
+	if providedRaw, exists := obj["chat"]; exists {
+		provided, ok := providedRaw.(map[string]any)
+		if !ok {
+			return Models{}, configErrorf("config.models_must_be_a_json_object_2", "chat")
+		}
+		var defs map[string]AgentDefinition
+		if len(definitions) > 0 {
+			defs = definitions[0]
+		}
+		chat, err := validateChatModels(provided, names, defs)
+		if err != nil {
+			return Models{}, err
+		}
+		models.Chat = chat
 	}
 	return models, nil
 }
@@ -642,6 +712,13 @@ func Validate(raw any) (*Config, error) {
 			kanbanAgents[scale] = kanbanAgent
 		}
 	}
+	chatAgent := ""
+	if _, exists := obj["chat_agent"]; exists {
+		chatAgent, err = validateChoice(obj["chat_agent"], names, "chat_agent")
+		if err != nil {
+			return nil, err
+		}
+	}
 	launcher, err := validateLauncher(obj["launcher"])
 	if err != nil {
 		return nil, err
@@ -650,15 +727,11 @@ func Validate(raw any) (*Config, error) {
 	if !ok {
 		return nil, configErrorf("config.reviewers_must_be_a_json_object")
 	}
-	reviewers := make(map[string]string, len(ReviewRoles))
 	reviewable := &Config{Agents: definitions}
 	reviewNames := ReviewAgentNames(reviewable)
-	for _, role := range ReviewRoles {
-		agent, err := validateReviewerChoice(reviewersRaw[role], reviewable, "reviewers."+role, reviewNames)
-		if err != nil {
-			return nil, err
-		}
-		reviewers[role] = agent
+	reviewers, err := validateReviewers(reviewersRaw, reviewable, reviewNames)
+	if err != nil {
+		return nil, err
 	}
 	var stages map[string]map[string]string
 	if _, exists := obj["review_stages"]; exists {
@@ -709,11 +782,12 @@ func Validate(raw any) (*Config, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Config{
+	cfg := &Config{
 		SchemaVersion:   SchemaVersion,
 		WelcomeComplete: welcome,
 		KanbanAgent:     kanbanAgent,
 		KanbanAgents:    kanbanAgents,
+		ChatAgent:       chatAgent,
 		Launcher:        launcher,
 		Reviewers:       reviewers,
 		ReviewStages:    stages,
@@ -723,7 +797,9 @@ func Validate(raw any) (*Config, error) {
 		Language:        language,
 		AgentLanguage:   agentLanguage,
 		Agents:          definitions,
-	}, nil
+	}
+	applyChatFallbacks(cfg, obj)
+	return cfg, nil
 }
 
 func ValidateJSON(data []byte) (*Config, error) {

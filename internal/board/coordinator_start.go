@@ -2,7 +2,10 @@ package board
 
 import "context"
 
-func coordinatorStartCycle(ctx context.Context, tx *Transaction, id string, old CoordinatorMember, s Snapshot) (string, bool, string, error) {
+// coordinatorStartCycle updates only the caller's local cursor when a verified
+// rollback revokes provisional metadata. Later handoff collection must use that
+// effective cursor, not require a reclaim from an execution that never started.
+func coordinatorStartCycle(ctx context.Context, tx *Transaction, id string, old *CoordinatorMember, s Snapshot) (string, bool, string, error) {
 	a, exists, err := readTaskStart(tx, id, "")
 	if err != nil {
 		return "", false, "", err
@@ -11,10 +14,10 @@ func coordinatorStartCycle(ctx context.Context, tx *Transaction, id string, old 
 		if old.StartAttempt != "" {
 			return "", false, "", coordinatorError("start attempt missing")
 		}
-		cycle, awaiting, err := coordinatorMemberCycle(id, old, s, false)
+		cycle, awaiting, err := coordinatorMemberCycle(tx, id, *old, s, false)
 		return cycle, awaiting, "", err
 	}
-	if err := coordinatorStartLineage(ctx, tx, id, old, a); err != nil {
+	if err := coordinatorStartLineage(ctx, tx, id, *old, a); err != nil {
 		return "", false, "", err
 	}
 	empty := ReviewDigest([]byte(id + "\n"))
@@ -36,9 +39,11 @@ func coordinatorStartCycle(ctx context.Context, tx *Transaction, id string, old 
 		}
 		if old.Cycle != empty {
 			// A later explicit move --owner can establish a manual execution
-			// after rollback. Its already observed cycle must remain unchanged.
-			if old.StartAttempt == a.ID && !old.AwaitingStart && old.Revision > a.FinishedRevision && old.Cycle == cycle {
-				return cycle, false, a.ID, nil
+			// after rollback. Further changes require the same release handoff
+			// evidence as an execution that has no launcher history.
+			if old.StartAttempt == a.ID && !old.AwaitingStart && old.Revision > a.FinishedRevision {
+				cycle, awaiting, err := coordinatorMemberCycle(tx, id, *old, s, false)
+				return cycle, awaiting, a.ID, err
 			}
 			// A formerly premature cursor can be revoked only by the exact
 			// producer rollback covering its observed revision and cycle.
@@ -54,11 +59,16 @@ func coordinatorStartCycle(ctx context.Context, tx *Transaction, id string, old 
 			return "", false, "", coordinatorError("rollback metadata not restored")
 		}
 	case "succeeded":
-		if cycle != a.Cycle || s.Revision < a.FinishedRevision {
+		if cycle != a.Cycle {
+			if _, err := lifecycleHandoffs(tx, s, a.Cycle); err != nil {
+				return "", false, "", err
+			}
+		}
+		if s.Revision < a.FinishedRevision {
 			return "", false, "", coordinatorError("confirmed start cycle changed")
 		}
 	}
-	cycle, awaiting, err := coordinatorMemberCycle(id, old, s, a.Status == "succeeded")
+	cycle, awaiting, err := coordinatorMemberCycle(tx, id, *old, s, a.Status == "succeeded")
 	return cycle, awaiting, a.ID, err
 }
 

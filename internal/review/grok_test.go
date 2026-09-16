@@ -18,7 +18,13 @@ while [ "$#" -gt 0 ]; do
     fi
     shift
 done
-cp "$prompt" "$FAKE_GROK_PROMPT"
+contract=$(sed -n 's/^Before reviewing, read the complete review contract at \(.*\) and follow it exactly\.$/\1/p' "$prompt")
+{
+    cat "$prompt"
+    if [ -n "$contract" ]; then
+        cat "$contract"
+    fi
+} > "$FAKE_GROK_PROMPT"
 if [ -n "${FAKE_GROK_TAMPER:-}" ]; then
     printf '%s\n' 'tampered' > "$FAKE_GROK_TAMPER"
 fi
@@ -65,7 +71,7 @@ func newGrokHarness(t *testing.T) *reviewHarness {
 
 func TestGrokIsolationFlags(t *testing.T) {
 	h := newGrokHarness(t)
-	code, out, err := h.review("grok", "QA", "确认改动正确")
+	code, out, err := h.review("grok", "PMQA", "确认改动正确")
 	if code != 0 {
 		t.Fatalf("code=%d err=%s", code, err)
 	}
@@ -87,7 +93,7 @@ func TestGrokIsolationFlags(t *testing.T) {
 func TestGrokIncompleteOutput(t *testing.T) {
 	h := newGrokHarness(t)
 	t.Setenv("FAKE_GROK_BAD_OUTPUT", "1")
-	code, _, err := h.review("grok", "QA", "确认改动正确")
+	code, _, err := h.review("grok", "PMQA", "确认改动正确")
 	if code != 1 || !strings.Contains(err, "did not complete with review text") {
 		t.Fatalf("code=%d err=%q", code, err)
 	}
@@ -96,7 +102,7 @@ func TestGrokIncompleteOutput(t *testing.T) {
 func TestGrokTamperDetected(t *testing.T) {
 	h := newGrokHarness(t)
 	t.Setenv("FAKE_GROK_TAMPER", filepath.Join(h.repo, "injected.txt"))
-	code, _, err := h.review("grok", "QA", "确认改动正确")
+	code, _, err := h.review("grok", "PMQA", "确认改动正确")
 	if code != 2 || !strings.Contains(err, "modified the target worktree") {
 		t.Fatalf("code=%d err=%q", code, err)
 	}
@@ -105,7 +111,7 @@ func TestGrokTamperDetected(t *testing.T) {
 func TestGrokIncremental(t *testing.T) {
 	h := newGrokHarness(t)
 	fixed := commitFile(t, h.repo, "c.txt", "fix\n", "修复")
-	code, _, err := captureRun(t, []string{"grok", h.repo, h.base, fixed, "PM", "确认改动正确", "Prior findings: PM-001 closed by c.txt", h.head})
+	code, _, err := captureRun(t, []string{"grok", h.repo, h.base, fixed, "PMQA", "确认改动正确", "Prior findings: PM-001 closed by c.txt", h.head})
 	if code != 0 {
 		t.Fatalf("code=%d err=%s", code, err)
 	}

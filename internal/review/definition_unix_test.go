@@ -38,8 +38,14 @@ while [ "$#" -gt 0 ]; do
     shift
 done
 if [ -n "$prompt" ] && [ -n "${FAKE_CUSTOM_PROMPT_COPY:-}" ]; then
-    cp "$prompt" "$FAKE_CUSTOM_PROMPT_COPY"
-    ls -l "$prompt" | awk '{print $1}' > "$FAKE_CUSTOM_PROMPT_MODE"
+	contract=$(sed -n 's/^Before reviewing, read the complete review contract at \(.*\) and follow it exactly\.$/\1/p' "$prompt")
+	{
+		cat "$prompt"
+		if [ -n "$contract" ]; then
+			cat "$contract"
+		fi
+	} > "$FAKE_CUSTOM_PROMPT_COPY"
+	ls -l "$prompt" | awk '{print $1}' > "$FAKE_CUSTOM_PROMPT_MODE"
 fi
 case "${FAKE_CUSTOM_MODE:-file}" in
     file)
@@ -62,7 +68,7 @@ esac
 exit 0
 `
 
-func writeCustomReviewerConfig(t *testing.T, h *reviewHarness, def map[string]any) {
+func writeCustomReviewerConfigUnchecked(t *testing.T, h *reviewHarness, def map[string]any) {
 	t.Helper()
 	cfg := config.DefaultConfig()
 	cfg.WelcomeComplete = true
@@ -78,6 +84,11 @@ func writeCustomReviewerConfig(t *testing.T, h *reviewHarness, def map[string]an
 	if err := os.WriteFile(os.Getenv(config.EnvConfig), data, 0o600); err != nil {
 		t.Fatal(err)
 	}
+}
+
+func writeCustomReviewerConfig(t *testing.T, h *reviewHarness, def map[string]any) {
+	t.Helper()
+	writeCustomReviewerConfigUnchecked(t, h, def)
 	if _, err := config.Load(false); err != nil {
 		t.Fatal(err)
 	}
@@ -115,6 +126,44 @@ func newCustomHarness(t *testing.T) *reviewHarness {
 	return h
 }
 
+func TestCustomReviewerReservedContractPathRejectedBeforeLaunch(t *testing.T) {
+	validOutput := map[string]any{"source": "file", "parse": "raw"}
+	for _, test := range []struct {
+		name   string
+		args   []string
+		review map[string]any
+	}{
+		{"output", []string{"--out", "{output}"}, map[string]any{
+			"cwd": "runtime", "output_name": "REVIEW-CONTRACT.MD", "output": validOutput,
+		}},
+		{"prompt-child", []string{"--file", "{prompt_file:guide}", "--out", "{output}"}, map[string]any{
+			"cwd": "runtime", "output_name": "result.txt", "output": validOutput,
+			"prompt_files": []any{map[string]any{
+				"name": "guide", "path": "Review-Contract.md/guide.txt", "template": "{prompt}",
+			}},
+		}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			h := newCustomHarness(t)
+			writeCustomReviewerConfigUnchecked(t, h, map[string]any{
+				"path": h.fake,
+				"args": map[string]any{
+					"start": []string{}, "resume": []string{}, "review": test.args,
+				},
+				"session": map[string]any{"mode": "none"},
+				"review":  test.review,
+			})
+			code, _, stderr := h.review("helper", "PMQA", "confirm change")
+			if code != 1 || !strings.Contains(stderr, config.ReviewContractFilename) {
+				t.Fatalf("code=%d stderr=%q", code, stderr)
+			}
+			if _, err := os.Stat(h.argvLog); !os.IsNotExist(err) {
+				t.Fatalf("reviewer launched: %v", err)
+			}
+		})
+	}
+}
+
 func TestCustomReviewerOutputSources(t *testing.T) {
 	h := newCustomHarness(t)
 	t.Setenv("FAKE_CUSTOM_OUT", filepath.Join(h.root, "forced-out.txt"))
@@ -137,15 +186,15 @@ func TestCustomReviewerOutputSources(t *testing.T) {
 		t.Run(item.name, func(t *testing.T) {
 			t.Setenv("FAKE_CUSTOM_MODE", item.mode)
 			writeCustomReviewerConfig(t, h, map[string]any{
-				"path": h.fake,
-				"args": map[string]any{"start": []string{}, "resume": []string{}, "review": []string{"--out", "{output}"}},
+				"path":    h.fake,
+				"args":    map[string]any{"start": []string{}, "resume": []string{}, "review": []string{"--out", "{output}"}},
 				"session": map[string]any{"mode": "none"},
 				"review": map[string]any{
 					"cwd": "runtime", "output_name": "result.txt", "inspection": "INSPECT-TOKEN",
 					"home_policy": "optional", "output": item.output,
 				},
 			})
-			code, out, err := h.review("helper", "QA", "确认改动正确")
+			code, out, err := h.review("helper", "PMQA", "确认改动正确")
 			if code != 0 {
 				t.Fatalf("code=%d err=%s out=%s", code, err, out)
 			}
@@ -161,15 +210,15 @@ func TestCustomReviewerInspectionInPrompt(t *testing.T) {
 	t.Setenv("FAKE_CUSTOM_MODE", "file")
 	t.Setenv("FAKE_CUSTOM_PROMPT_COPY", h.promptLog)
 	writeCustomReviewerConfig(t, h, map[string]any{
-		"path": h.fake,
-		"args": map[string]any{"start": []string{}, "resume": []string{}, "review": []string{"--file", "{prompt_file}", "--out", "{output}"}},
+		"path":    h.fake,
+		"args":    map[string]any{"start": []string{}, "resume": []string{}, "review": []string{"--file", "{prompt_file}", "--out", "{output}"}},
 		"session": map[string]any{"mode": "none"},
 		"review": map[string]any{
 			"cwd": "runtime", "output_name": "result.txt", "inspection": "INSPECT-TOKEN",
 			"home_policy": "optional", "output": map[string]any{"source": "file", "parse": "raw"},
 		},
 	})
-	code, _, err := h.review("helper", "QA", "确认改动正确")
+	code, _, err := h.review("helper", "PMQA", "确认改动正确")
 	if code != 0 {
 		t.Fatalf("code=%d err=%s", code, err)
 	}
@@ -195,11 +244,11 @@ func TestCustomReviewerStdinNonePromptFiles(t *testing.T) {
 		"review": map[string]any{
 			"cwd": "runtime", "output_name": "result.txt", "inspection": "NO-WRITE",
 			"home_policy": "optional", "stdin": "none",
-			"output": map[string]any{"source": "file", "parse": "raw"},
+			"output":       map[string]any{"source": "file", "parse": "raw"},
 			"prompt_files": []any{map[string]any{"name": "guide", "path": "guide.md", "template": template}},
 		},
 	})
-	code, out, err := h.review("helper", "QA", "确认改动正确")
+	code, out, err := h.review("helper", "PMQA", "确认改动正确")
 	if code != 0 {
 		t.Fatalf("code=%d err=%s out=%s", code, err, out)
 	}
@@ -207,7 +256,7 @@ func TestCustomReviewerStdinNonePromptFiles(t *testing.T) {
 	if !strings.HasPrefix(rendered, "INSPECT=NO-WRITE\nPROMPT=") {
 		t.Fatalf("rendered=%q", rendered)
 	}
-	if !strings.Contains(rendered, "You are the QA review agent") {
+	if !strings.Contains(rendered, "You are the PMQA review agent") {
 		t.Fatalf("prompt missing body: %s", rendered)
 	}
 	mode := strings.TrimSpace(readFile(t, filepath.Join(h.root, "prompt.mode")))
@@ -230,28 +279,28 @@ func TestCustomAndBuiltinHomePolicy(t *testing.T) {
 	missing := filepath.Join(h.root, "absent-home")
 	t.Setenv("HELPER_HOME", missing)
 	writeCustomReviewerConfig(t, h, map[string]any{
-		"path": h.fake,
-		"args": map[string]any{"start": []string{}, "resume": []string{}, "review": []string{"--out", "{output}"}},
+		"path":    h.fake,
+		"args":    map[string]any{"start": []string{}, "resume": []string{}, "review": []string{"--out", "{output}"}},
 		"session": map[string]any{"mode": "none"},
 		"review": map[string]any{
 			"cwd": "runtime", "output_name": "result.txt", "home_env": "HELPER_HOME",
 			"home_policy": "optional", "output": map[string]any{"source": "file", "parse": "raw"},
 		},
 	})
-	code, _, err := h.review("helper", "QA", "确认改动正确")
+	code, _, err := h.review("helper", "PMQA", "确认改动正确")
 	if code != 0 {
 		t.Fatalf("optional code=%d err=%s", code, err)
 	}
 	writeCustomReviewerConfig(t, h, map[string]any{
-		"path": h.fake,
-		"args": map[string]any{"start": []string{}, "resume": []string{}, "review": []string{"--out", "{output}"}},
+		"path":    h.fake,
+		"args":    map[string]any{"start": []string{}, "resume": []string{}, "review": []string{"--out", "{output}"}},
 		"session": map[string]any{"mode": "none"},
 		"review": map[string]any{
 			"cwd": "runtime", "output_name": "result.txt", "home_env": "HELPER_HOME",
 			"home_policy": "required", "output": map[string]any{"source": "file", "parse": "raw"},
 		},
 	})
-	code, _, err = h.review("helper", "QA", "确认改动正确")
+	code, _, err = h.review("helper", "PMQA", "确认改动正确")
 	if code != 2 || !strings.Contains(err, "not readable and writable") {
 		t.Fatalf("required code=%d err=%q", code, err)
 	}
@@ -301,12 +350,12 @@ func TestBuiltinReviewStdinAndPromptBytes(t *testing.T) {
 				h = newGrokHarness(t)
 				promptPath = h.promptLog
 			}
-			code, _, err := h.review(agent, "QA", "确认改动正确")
+			code, _, err := h.review(agent, "PMQA", "确认改动正确")
 			if code != 0 {
 				t.Fatalf("code=%d err=%s", code, err)
 			}
 			prompt := readFile(t, promptPath)
-			if !strings.Contains(prompt, "You are the QA review agent") {
+			if !strings.Contains(prompt, "You are the PMQA review agent") {
 				t.Fatalf("prompt missing body: %s", prompt)
 			}
 			wantInspection := map[string]string{
@@ -338,14 +387,14 @@ func TestBuiltinHomePolicyClaudeVsCursor(t *testing.T) {
 	claude := newClaudeHarness(t)
 	missing := filepath.Join(claude.root, "absent-claude")
 	t.Setenv("CLAUDE_CONFIG_DIR", missing)
-	code, _, err := claude.review("claude", "QA", "确认改动正确")
+	code, _, err := claude.review("claude", "PMQA", "确认改动正确")
 	if code != 2 || !strings.Contains(err, "not readable and writable") {
 		t.Fatalf("claude missing home code=%d err=%q", code, err)
 	}
 	cursor := newCursorHarness(t)
 	absent := filepath.Join(cursor.root, "absent-cursor-home")
 	t.Setenv("CURSOR_CONFIG_DIR", absent)
-	code, _, err = cursor.review("cursor", "QA", "确认改动正确")
+	code, _, err = cursor.review("cursor", "PMQA", "确认改动正确")
 	if code != 0 {
 		t.Fatalf("cursor optional home code=%d err=%s", code, err)
 	}

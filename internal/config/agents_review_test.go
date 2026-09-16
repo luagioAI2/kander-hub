@@ -33,7 +33,10 @@ func TestReviewTemplateValidation(t *testing.T) {
 		{"unknown-placeholder", map[string]any{"path": executable, "args": map[string]any{"start": []string{}, "resume": []string{}, "review": []string{"{shell}"}}, "session": map[string]any{"mode": "none"}, "review": validReview}, true, "placeholder"},
 		{"stdin-none-missing", map[string]any{"path": executable, "args": map[string]any{"start": []string{}, "resume": []string{}, "review": []string{"--x"}}, "session": map[string]any{"mode": "none"}, "review": map[string]any{"cwd": "runtime", "output_name": "out.txt", "output": validOutput, "stdin": "none"}}, true, "instruction"},
 		{"stdin-dup", map[string]any{"path": executable, "args": map[string]any{"start": []string{}, "resume": []string{}, "review": []string{"{instruction}"}}, "session": map[string]any{"mode": "none"}, "review": map[string]any{"cwd": "runtime", "output_name": "out.txt", "output": validOutput, "stdin": "instruction"}}, true, "instruction"},
+		{"output-reserved", map[string]any{"path": executable, "args": map[string]any{"start": []string{}, "resume": []string{}, "review": []string{"--x"}}, "session": map[string]any{"mode": "none"}, "review": map[string]any{"cwd": "runtime", "output_name": "REVIEW-CONTRACT.MD", "output": validOutput}}, true, ReviewContractFilename},
 		{"prompt-traverse", map[string]any{"path": executable, "args": map[string]any{"start": []string{}, "resume": []string{}, "review": []string{"--file", "{prompt_file:guide}"}}, "session": map[string]any{"mode": "none"}, "review": map[string]any{"cwd": "runtime", "output_name": "out.txt", "output": validOutput, "prompt_files": []any{map[string]any{"name": "guide", "path": "../x", "template": "{prompt}"}}}}, true, "path"},
+		{"prompt-reserved", map[string]any{"path": executable, "args": map[string]any{"start": []string{}, "resume": []string{}, "review": []string{"--file", "{prompt_file:guide}"}}, "session": map[string]any{"mode": "none"}, "review": map[string]any{"cwd": "runtime", "output_name": "out.txt", "output": validOutput, "prompt_files": []any{map[string]any{"name": "guide", "path": "review-contract.md", "template": "{prompt}"}}}}, true, ReviewContractFilename},
+		{"prompt-reserved-child", map[string]any{"path": executable, "args": map[string]any{"start": []string{}, "resume": []string{}, "review": []string{"--file", "{prompt_file:guide}"}}, "session": map[string]any{"mode": "none"}, "review": map[string]any{"cwd": "runtime", "output_name": "out.txt", "output": validOutput, "prompt_files": []any{map[string]any{"name": "guide", "path": "Review-Contract.md/guide.txt", "template": "{prompt}"}}}}, true, ReviewContractFilename},
 		{"prompt-unknown-ref", map[string]any{"path": executable, "args": map[string]any{"start": []string{}, "resume": []string{}, "review": []string{"{prompt_file:missing}"}}, "session": map[string]any{"mode": "none"}, "review": map[string]any{"cwd": "runtime", "output_name": "out.txt", "output": validOutput}}, true, "prompt"},
 		{"ok", map[string]any{"path": executable, "args": map[string]any{"start": []string{}, "resume": []string{}, "review": []string{"--file", "{prompt_file:guide}", "{instruction}"}}, "session": map[string]any{"mode": "none"}, "review": map[string]any{"cwd": "runtime", "home_policy": "optional", "output_name": "out.txt", "stdin": "none", "snapshot_spec": true, "spawns_helpers": false, "output": validOutput, "prompt_files": []any{map[string]any{"name": "guide", "path": "guide.md", "template": "{inspection}\n{prompt}"}}}}, false, ""},
 	} {
@@ -68,7 +71,9 @@ func TestStartOnlyReviewerRejectedAndDoctorLeavesIt(t *testing.T) {
 	cfg.Agents = map[string]AgentDefinition{
 		"plain": {Path: exe, Args: &AgentArgs{Start: []string{"--go"}, Resume: []string{}}, Session: &AgentSessionDefinition{Mode: "generated"}},
 	}
-	cfg.Reviewers["PM"] = "plain"
+	for _, scale := range TaskScales {
+		cfg.Reviewers[scale]["PMQA"] = "plain"
+	}
 	data, err := json.Marshal(cfg)
 	if err != nil {
 		t.Fatal(err)

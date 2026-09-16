@@ -6,25 +6,26 @@
     "large": "codex",
     "small": "codex"
   },
+  "chat_agent": "codex",
   "launcher": "auto",
   "reviewers": {
-    "CSA": "codex",
-    "Hacker": "codex",
-    "PM": "codex",
-    "QA": "codex"
+    "large": {
+      "PMQA": "codex",
+      "Security": "codex"
+    },
+    "small": {
+      "PMQA": "codex",
+      "Security": "codex"
+    }
   },
   "review_stages": {
     "large": {
-      "CSA": "auto",
-      "Hacker": "auto",
-      "PM": "auto",
-      "QA": "auto"
+      "PMQA": "auto",
+      "Security": "auto"
     },
     "small": {
-      "CSA": "auto",
-      "Hacker": "auto",
-      "PM": "auto",
-      "QA": "auto"
+      "PMQA": "auto",
+      "Security": "auto"
     }
   },
   "rules": {
@@ -56,13 +57,14 @@
         "large_model": "cursor-grok-4.6-xhigh",
         "small_model": "cursor-grok-4.6-high"
       },
-            "dsh": {
+      "dsh": {
         "large_effort": "max",
         "large_model": "deepseek-v4-pro",
         "model": "",
         "small_effort": "high",
         "small_model": "deepseek-v4-flash"
-      },"grok": {
+      },
+      "grok": {
         "large_effort": "xhigh",
         "large_model": "",
         "model": "",
@@ -82,29 +84,55 @@
       "cursor": {
         "model": "cursor-grok-4.6-xhigh"
       },
-            "dsh": {
+      "dsh": {
         "effort": "max",
         "model": "deepseek-v4-flash"
-      },"grok": {
+      },
+      "grok": {
         "effort": "high",
         "model": ""
       }
     },
     "review_roles": {
-      "CSA": {
+      "PMQA": {
         "effort": "",
-        "model": ""
+        "large_agent": "",
+        "large_effort": "",
+        "large_model": "",
+        "model": "",
+        "small_agent": "",
+        "small_effort": "",
+        "small_model": ""
       },
-      "Hacker": {
+      "Security": {
         "effort": "",
-        "model": ""
+        "large_agent": "",
+        "large_effort": "",
+        "large_model": "",
+        "model": "",
+        "small_agent": "",
+        "small_effort": "",
+        "small_model": ""
+      }
+    },
+    "chat": {
+      "claude": {
+        "effort": "high",
+        "model": "opus"
       },
-      "PM": {
-        "effort": "",
-        "model": ""
+      "codex": {
+        "effort": "high",
+        "model": "gpt-5.6-sol"
       },
-      "QA": {
-        "effort": "",
+      "cursor": {
+        "model": "cursor-grok-4.6-xhigh"
+      },
+      "dsh": {
+        "effort": "max",
+        "model": "deepseek-v4-pro"
+      },
+      "grok": {
+        "effort": "xhigh",
         "model": ""
       }
     }

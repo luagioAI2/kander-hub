@@ -44,13 +44,13 @@ func TestMinimalCursorFixtureJSONRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Captured from minimalPayload(nil) at 8abdfe2e, before the migration.
+	// Captured from minimalPayload(nil), then updated for two review roles.
 	want, err := os.ReadFile("testdata/minimal-cursor-config.json")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if string(data) != strings.TrimSuffix(string(want), "\n") {
-		t.Fatalf("fixture JSON differs from the pre-migration output\ngot:\n%s\nwant:\n%s", data, want)
+		t.Fatalf("fixture JSON differs from the pinned output\ngot:\n%s\nwant:\n%s", data, want)
 	}
 	again, err := ValidateJSON(data)
 	if err != nil {

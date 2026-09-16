@@ -1,5 +1,9 @@
 // Package i18n owns Kander's embedded message catalogs. Language selection stays
 // with config; this package has no dependency on application configuration.
+//
+// Every language has one general catalog plus optional topic catalogs under
+// locales/<topic>/<language>.json, so a feature can grow its own messages
+// without pushing a shared catalog past the reviewable file ceiling.
 package i18n
 
 import (
@@ -10,16 +14,33 @@ import (
 	"golang.org/x/text/language"
 )
 
-//go:embed locales/*.json
+//go:embed locales
 var catalogs embed.FS
+
+// catalogFiles are loaded into one bundle; the file's base name picks the language.
+var catalogFiles = []string{
+	"locales/install/en.json", "locales/install/zh-CN.json", "locales/install/ja.json",
+	"locales/result/en.json", "locales/result/zh-CN.json", "locales/result/ja.json",
+	"locales/actions/en.json", "locales/actions/zh-CN.json", "locales/actions/ja.json",
+	"locales/en.json", "locales/zh-CN.json", "locales/ja.json",
+	"locales/issue/en.json", "locales/issue/zh-CN.json", "locales/issue/ja.json",
+	"locales/agentlanguage/en.json", "locales/agentlanguage/zh-CN.json", "locales/agentlanguage/ja.json",
+	"locales/orchestrate/en.json", "locales/orchestrate/zh-CN.json", "locales/orchestrate/ja.json",
+	"locales/chat/en.json", "locales/chat/zh-CN.json", "locales/chat/ja.json",
+	"locales/welcome/en.json", "locales/welcome/zh-CN.json", "locales/welcome/ja.json",
+	"locales/terminal/en.json", "locales/terminal/zh-CN.json", "locales/terminal/ja.json",
+	"locales/dialog/en.json", "locales/dialog/zh-CN.json", "locales/dialog/ja.json",
+	"locales/detail/en.json", "locales/detail/zh-CN.json", "locales/detail/ja.json",
+	"locales/check/en.json", "locales/check/zh-CN.json", "locales/check/ja.json",
+}
 
 var localizers = loadLocalizers()
 
 func loadLocalizers() map[string]*goi18n.Localizer {
 	bundle := goi18n.NewBundle(language.SimplifiedChinese)
-	for _, file := range []string{"locales/en.json", "locales/zh-CN.json", "locales/ja.json"} {
+	for _, file := range catalogFiles {
 		if _, err := bundle.LoadMessageFileFS(catalogs, file); err != nil {
-			panic(fmt.Errorf("load embedded translations: %w", err))
+			panic(fmt.Errorf("load embedded translations %s: %w", file, err))
 		}
 	}
 	return map[string]*goi18n.Localizer{
@@ -52,4 +73,14 @@ func Text(lang, id string, args ...any) string {
 		return id
 	}
 	return text
+}
+
+// Has reports whether the catalog defines a message ID, so declarative
+// definitions can reject a message ID that would render verbatim.
+func Has(id string) bool {
+	if id == "" {
+		return false
+	}
+	_, err := localizers["en"].Localize(&goi18n.LocalizeConfig{MessageID: id})
+	return err == nil
 }

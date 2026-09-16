@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/dualface/kander/internal/board"
 	"github.com/dualface/kander/internal/launch"
+	"github.com/dualface/kander/internal/terminal"
 )
 
 func startTestApp(state string) *App {
@@ -28,11 +29,11 @@ func startTestApp(state string) *App {
 	return app
 }
 
-func TestStartKeyStatesAndCancellation(t *testing.T) {
+func TestStartConfirmationStatesAndCancellation(t *testing.T) {
 	for _, state := range []string{"backlog", "todo", "working", "review", "done", "archived", "trash"} {
 		t.Run(state, func(t *testing.T) {
 			app := startTestApp(state)
-			app.HandleKey("s")
+			app.confirmSelectedStart()
 			finishStartPreview(app)
 			if state != "backlog" && state != "todo" {
 				if app.StartConfirmation != nil || app.pendingWork != nil || app.CopyNotice == "" {
@@ -52,26 +53,32 @@ func TestStartKeyStatesAndCancellation(t *testing.T) {
 			if state == "backlog" && !strings.Contains(text, "todo") {
 				t.Fatal("missing backlog move warning")
 			}
-			for _, key := range []string{"esc", "n", "q", "s", "enter", "Y", "ctrl-c"} {
+			for _, key := range []string{"esc", "n", "N"} {
 				app.HandleKey(key)
 				if app.StartConfirmation != nil || app.pendingWork != nil || !app.Running {
 					t.Fatalf("cancel %q produced side effect", key)
 				}
-				app.HandleKey("s")
+				app.confirmSelectedStart()
 				finishStartPreview(app)
+			}
+			for _, key := range []string{"q", "s", "enter", "ctrl-c"} {
+				app.HandleKey(key)
+				if app.StartConfirmation == nil || app.pendingWork != nil || !app.Running {
+					t.Fatalf("ignored %q closed the dialog", key)
+				}
 			}
 		})
 	}
 	app := startTestApp("todo")
 	app.Model.SetBoard(BoardPayload{})
-	app.HandleKey("s")
+	app.confirmSelectedStart()
 	finishStartPreview(app)
 	if app.StartConfirmation != nil || app.CopyNotice == "" {
 		t.Fatal("empty selection must show notice")
 	}
 }
 
-func TestStartKeyContextsAndHelp(t *testing.T) {
+func TestStartKeyContexts(t *testing.T) {
 	app := startTestApp("todo")
 	app.HandleKey("/")
 	app.HandleKey("s")
@@ -86,15 +93,6 @@ func TestStartKeyContextsAndHelp(t *testing.T) {
 	if app.Detail == nil || app.StartConfirmation != nil {
 		t.Fatal("detail s must not start")
 	}
-	found := false
-	for _, entry := range boardHelpGroups()[0].Entries {
-		if entry.Keys == "s" {
-			found = entry.Desc != ""
-		}
-	}
-	if !found {
-		t.Fatal("missing board help")
-	}
 }
 
 func TestStartConfirmationErrors(t *testing.T) {
@@ -102,7 +100,7 @@ func TestStartConfirmationErrors(t *testing.T) {
 		app := startTestApp("backlog")
 		prepare := app.PrepareStart
 		app.PrepareStart = func(id string) (startRequest, error) { r, e := prepare(id); r.Launcher = launcher; return r, e }
-		app.HandleKey("s")
+		app.confirmSelectedStart()
 		finishStartPreview(app)
 		if app.StartConfirmation != nil || app.pendingWork != nil || !strings.Contains(app.CopyNotice, "kander start") {
 			t.Fatal("unsupported launcher must require CLI")
@@ -114,7 +112,7 @@ func TestStartConfirmationErrors(t *testing.T) {
 	}
 	app := startTestApp("todo")
 	app.PrepareStart = func(string) (startRequest, error) { return startRequest{}, errors.New("config unreadable") }
-	app.HandleKey("s")
+	app.confirmSelectedStart()
 	finishStartPreview(app)
 	if app.StartConfirmation == nil || !app.StartConfirmation.failed || !strings.Contains(app.StartConfirmation.message, "config unreadable") {
 		t.Fatal("config error must stay in the start dialog")
@@ -150,22 +148,26 @@ func TestStartBackgroundCompletion(t *testing.T) {
 				if failed {
 					return launch.StartResult{}, errors.New("launch broke")
 				}
-				return launch.StartResult{TaskID: r.TaskID, Agent: r.Agent, Plan: launch.LaunchPlan{Launcher: launcher, Session: "$4"}, Outcome: launch.LaunchOutcome{Tab: "w1:t9", Window: "@9", Pane: "%9"}, Warnings: []string{"identity warning"}}, nil
+				return launch.StartResult{TaskID: r.TaskID, Agent: r.Agent, Plan: launch.LaunchPlan{Launcher: launcher, Target: terminal.Target{Session: "$4"}}, Outcome: launch.LaunchOutcome{Container: "@9", Pane: "%9"}, Warnings: []string{"identity warning"}}, nil
 			}
 			p := program{app: app}
-			app.HandleKey("s")
+			app.confirmSelectedStart()
 			finishStartPreview(app)
 			_, cmd := p.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'y'}})
-			if cmd == nil || calls != 0 || refreshes != 0 || app.StartConfirmation == nil || app.StartConfirmation.phase != startRunning {
+			if cmd == nil || calls != 0 || refreshes != 0 || app.StartConfirmation == nil || app.StartConfirmation.phase != confirmRunning {
 				t.Fatal("start must be asynchronous")
 			}
 			app.HandleKey("/")
-			if app.Searching || app.StartConfirmation.phase != startRunning {
+			if app.Searching || app.StartConfirmation.phase != confirmRunning {
 				t.Fatal("starting dialog must retain input")
 			}
-			p.Update(cmd())
-			if calls != 1 || refreshes != 1 || app.StartConfirmation.phase != startFinished {
+			_, next := p.Update(cmd())
+			if calls != 1 || refreshes != 0 || app.StartConfirmation.phase != confirmFinished {
 				t.Fatalf("calls=%d refreshes=%d", calls, refreshes)
+			}
+			applyWorkCmd(t, app, next)
+			if refreshes != 1 {
+				t.Fatalf("start result did not refresh: %d", refreshes)
 			}
 			if failed {
 				if !strings.Contains(app.CopyNotice, "launch broke") {
@@ -214,7 +216,7 @@ func TestBacklogStartUsesControlledGate(t *testing.T) {
 		t.Fatal("failed gate changed card")
 	}
 	app := startTestApp("backlog")
-	app.applyStartResult(startResult{err: err})
+	app.applyStartResult(confirmWork{err: err})
 	if !strings.Contains(app.CopyNotice, strings.ReplaceAll(err.Error(), "\n", " ")) {
 		t.Fatal("gate error not visible")
 	}
@@ -259,7 +261,7 @@ func TestBacklogStartMovesToTodoBeforeLaunchPreflight(t *testing.T) {
 
 func TestStartConfirmationNarrowTerminalAndMouse(t *testing.T) {
 	app := startTestApp("todo")
-	app.HandleKey("s")
+	app.confirmSelectedStart()
 	finishStartPreview(app)
 	for _, width := range []int{12, 40, 80} {
 		app.Width, app.Height = width, 24
@@ -276,8 +278,12 @@ func TestStartConfirmationNarrowTerminalAndMouse(t *testing.T) {
 		t.Fatal("mouse escaped confirmation")
 	}
 	app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if app.StartConfirmation == nil || !app.Running {
+		t.Fatal("Ctrl+C must be ignored on the ready dialog")
+	}
+	app.HandleKey("n")
 	if app.StartConfirmation != nil || !app.Running {
-		t.Fatal("Ctrl+C must cancel confirmation")
+		t.Fatal("n must cancel confirmation")
 	}
 }
 
@@ -285,10 +291,10 @@ func TestStartResultRendersCompleteContainerAddress(t *testing.T) {
 	app := startTestApp("todo")
 	app.Width = 80
 	const address = "kb-board-start-task-key-12345678:@9:%9"
-	app.applyStartResult(startResult{result: launch.StartResult{
+	app.applyStartResult(confirmWork{payload: launch.StartResult{
 		TaskID: "20260908-options-workflow-flowchart-task", Agent: "claude",
-		Plan:    launch.LaunchPlan{Launcher: "tmux-session", Session: "kb-board-start-task-key-12345678"},
-		Outcome: launch.LaunchOutcome{Window: "@9", Pane: "%9"},
+		Plan:    launch.LaunchPlan{Launcher: "tmux-session", Target: terminal.Target{Session: "kb-board-start-task-key-12345678"}},
+		Outcome: launch.LaunchOutcome{Container: "@9", Pane: "%9"},
 	}})
 	lines := strings.Split(ansi.Strip(app.View()), "\n")
 	footer := lines[len(lines)-1]

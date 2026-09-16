@@ -50,7 +50,7 @@ func TestBuiltinReviewDefinitionsMatchPrevious(t *testing.T) {
 	}
 	for agent, want := range cases {
 		t.Run(agent, func(t *testing.T) {
-			settings, err := agentSettingsFor(agent, "PM")
+			settings, err := agentSettingsFor(agent, "PMQA", "large")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -186,7 +186,7 @@ func TestParseReviewOutputSuccessBeforeExtract(t *testing.T) {
 	}
 	for _, item := range rows {
 		t.Run(item.agent+"/"+item.body[:min(12, len(item.body))], func(t *testing.T) {
-			settings, err := agentSettingsFor(item.agent, "QA")
+			settings, err := agentSettingsFor(item.agent, "PMQA", "large")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -216,8 +216,12 @@ func TestBuiltinReviewStdinMatchesPreviousInstruction(t *testing.T) {
 	if !strings.Contains(want, "task file at "+promptFile) {
 		t.Fatalf("instruction %q", want)
 	}
+	// Built-in reviewers whose review stdin is the task-file instruction and
+	// which stage no prompt files. This fork ships dsh in the extra-agent slot
+	// instead of upstream's pi, and dsh uses stdin=none with a prompt-file
+	// overlay, so it is intentionally absent here.
 	for _, agent := range []string{"codex", "claude", "cursor", "grok"} {
-		settings, err := agentSettingsFor(agent, "QA")
+		settings, err := agentSettingsFor(agent, "PMQA", "large")
 		if err != nil {
 			t.Fatal(err)
 		}

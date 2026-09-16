@@ -30,6 +30,20 @@ const panelChrome = 4
 // panelDetailChrome equals panelChrome; the detail panel has to subtract it too when it spans the full screen width.
 const panelDetailChrome = 4
 
+func (a *App) columnStripVisible() bool {
+	h, w := a.size()
+	return w > 0 && w <= columnStripMaxWidth && h >= minBoardHeight
+}
+
+func (a *App) boardBodyHeight() int {
+	h, _ := a.size()
+	n := h - bodyTop - 2
+	if n < 1 {
+		return 1
+	}
+	return n
+}
+
 // renderBoardView assembles the board with Lip Gloss: header, blank line, the column panels, and the bottom status bar.
 func (a *App) renderBoardView() string {
 	h, w := a.size()
@@ -43,16 +57,17 @@ func (a *App) renderBoardView() string {
 			styleFor("footer", p).Render(padLine(" "+a.Context.QuitHelp, w)),
 		)
 	}
-	bodyHeight := h - bodyTop - 2
-	if bodyHeight < 1 {
-		bodyHeight = 1
-	}
+	bodyHeight := a.boardBodyHeight()
 	layout := a.visibleColumnLayout()
-	columnHeight := bodyHeight + 2
+	tabs := a.columnStripVisible()
+	columnHeight := bodyHeight + 1
+	if !tabs {
+		columnHeight++
+	}
 
 	blocks := make([]string, 0, len(layout)*2)
 	for i, col := range layout {
-		blocks = append(blocks, a.renderColumnPanel(p, col, bodyHeight,
+		blocks = append(blocks, a.renderColumnPanel(p, col, bodyHeight, tabs,
 			i == 0, i == len(layout)-1,
 			a.Model.ColumnOffset > 0,
 			a.Model.ColumnOffset+len(layout) < len(a.Model.States())))
@@ -61,13 +76,16 @@ func (a *App) renderBoardView() string {
 		}
 	}
 	board := lipgloss.JoinHorizontal(lipgloss.Top, blocks...)
-	return lipgloss.JoinVertical(lipgloss.Left,
+	parts := []string{
 		header,
 		// Leave one blank line between the header and the column panels so they are not cramped together.
 		p.fillLine(w),
-		padBlock(board, w, columnHeight, p),
-		a.renderStatusBar(p, w, len(layout)),
-	)
+	}
+	if tabs {
+		parts = append(parts, a.renderColumnTabs(p, w))
+	}
+	parts = append(parts, padBlock(board, w, columnHeight, p), a.renderStatusBar(p, w, len(layout)))
+	return lipgloss.JoinVertical(lipgloss.Left, parts...)
 }
 
 // renderHeader is the single top line: title and search on the left, column count and update time on the right.
@@ -147,7 +165,7 @@ func (a *App) visibleTaskCount() int {
 }
 
 // renderColumnPanel draws one column as a rounded panel with a title.
-func (a *App) renderColumnPanel(p palette, col boardLayout, bodyHeight int, first, last, moreLeft, moreRight bool) string {
+func (a *App) renderColumnPanel(p palette, col boardLayout, bodyHeight int, skipTop, first, last, moreLeft, moreRight bool) string {
 	width := col.Width
 	focused := col.State == a.Model.CurrentState()
 	tasks, scroll, capacity := columnTaskWindow(a.Model, col.State, bodyHeight)
@@ -160,13 +178,19 @@ func (a *App) renderColumnPanel(p palette, col boardLayout, bodyHeight int, firs
 		showLeft, showRight = true, true
 	}
 
-	lines := []string{a.panelTop(p, col.State, label, itoa(len(tasks)), width, focused, showLeft, showRight)}
+	var lines []string
+	if !skipTop {
+		lines = append(lines, a.panelTop(p, col.State, label, itoa(len(tasks)), width, focused, showLeft, showRight))
+	}
 	contentWidth := width - panelChrome
 	if contentWidth < 1 {
 		contentWidth = 1
 	}
 	body := make([]string, 0, bodyHeight)
 	if len(tasks) == 0 {
+		if bodyHeight > 1 {
+			body = append(body, "")
+		}
 		body = append(body, styleFor("dim", p).Render(centerText(a.Context.Empty, width-2)))
 	} else {
 		end := scroll + capacity
@@ -187,6 +211,132 @@ func (a *App) renderColumnPanel(p palette, col boardLayout, bodyHeight int, firs
 	}
 	lines = append(lines, a.panelBottom(p, col.State, width, focused))
 	return strings.Join(lines, "\n")
+}
+
+type columnTabCell struct {
+	state    string
+	x, width int
+	text     string
+	selected bool
+}
+
+func columnTabSegment(label string, selected bool, index int, prevSelected bool, count int) string {
+	text := label
+	// Selected tabs always keep the count (including zero). Idle tabs only
+	// show it when the column has cards, so empty states stay compact.
+	if selected || count > 0 {
+		text = label + " " + itoa(count)
+	}
+	if selected {
+		return borderVertical + text + borderVertical
+	}
+	if index > 0 && !prevSelected {
+		return borderVertical + text
+	}
+	return text
+}
+
+func measureTabLabels(states, labels []string, current string, counts []int) int {
+	width := 0
+	prevSelected := false
+	for i, state := range states {
+		selected := state == current
+		width += displayWidth(columnTabSegment(labels[i], selected, i, prevSelected, counts[i]))
+		prevSelected = selected
+	}
+	return width
+}
+
+func longestIdleLabel(states, labels []string, current string) int {
+	best, bestWidth := -1, 0
+	for i, state := range states {
+		if state == current {
+			continue
+		}
+		// CJK single-rune names still have display width 2, but trimLastRune
+		// cannot shorten them. Skip any label that would not actually shrink.
+		if displayWidth(trimLastRune(labels[i])) >= displayWidth(labels[i]) {
+			continue
+		}
+		if w := displayWidth(labels[i]); w > bestWidth {
+			best, bestWidth = i, w
+		}
+	}
+	return best
+}
+
+func trimLastRune(value string) string {
+	runes := []rune(value)
+	if len(runes) <= 1 {
+		return value
+	}
+	return string(runes[:len(runes)-1])
+}
+
+func (a *App) columnTabCells(width int) []columnTabCell {
+	if width < 1 {
+		return nil
+	}
+	states := a.Model.States()
+	if len(states) == 0 {
+		return nil
+	}
+	current := a.Model.CurrentState()
+	labels := make([]string, len(states))
+	counts := make([]int, len(states))
+	for i, state := range states {
+		labels[i] = a.Context.stateLabel(state)
+		counts[i] = len(a.Model.TasksFor(state))
+	}
+	for measureTabLabels(states, labels, current, counts) > width {
+		idle := longestIdleLabel(states, labels, current)
+		if idle < 0 {
+			break
+		}
+		labels[idle] = trimLastRune(labels[idle])
+	}
+	cells := make([]columnTabCell, 0, len(states))
+	x := 0
+	prevSelected := false
+	for i, state := range states {
+		selected := state == current
+		text := columnTabSegment(labels[i], selected, i, prevSelected, counts[i])
+		w := displayWidth(text)
+		if x+w > width {
+			remain := width - x
+			if remain < 1 {
+				break
+			}
+			text = clipText(text, remain)
+			w = displayWidth(text)
+			if w < 1 {
+				break
+			}
+		}
+		cells = append(cells, columnTabCell{state: state, x: x, width: w, text: text, selected: selected})
+		x += w
+		prevSelected = selected
+		if x >= width {
+			break
+		}
+	}
+	return cells
+}
+
+func (a *App) renderColumnTabs(p palette, width int) string {
+	cells := a.columnTabCells(width)
+	parts := make([]string, 0, len(cells))
+	for _, cell := range cells {
+		if cell.selected {
+			parts = append(parts, columnStripStyle(p, cell.state, true).Render(cell.text))
+			continue
+		}
+		parts = append(parts, styleFor("dim", p).Render(cell.text))
+	}
+	if len(parts) == 0 {
+		return p.fillLine(width)
+	}
+	return padLineFill(strings.Join(parts, ""), width, p)
 }
 
 // renderCard draws one task card. The card keeps one column of padding on each side and both take part in the coloring,

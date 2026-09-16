@@ -13,18 +13,20 @@ func TestDoctorSyncPreservesPendingSettings(t *testing.T) {
 	app, panel := openPanel(t)
 	panel.dirty = true
 	panel.session.Config.Language = "en"
-	panel.session.Config.Models.ReviewRoles["PM"]["model"] = "pending-model"
+	panel.session.Config.Models.ReviewRoles["PMQA"]["model"] = "pending-model"
 	before := config.DefaultConfig()
 	after := config.DefaultConfig()
 	after.WelcomeComplete = true
-	after.Reviewers["QA"] = "claude"
-	after.Models.ReviewRoles["QA"]["model"] = "opus"
+	for _, scale := range config.TaskScales {
+		after.Reviewers[scale]["Security"] = "claude"
+	}
+	after.Models.ReviewRoles["Security"]["model"] = "opus"
 	app.applyWork(doctorResult{before: before, after: after})
 	got := panel.session.Config
-	if got.Language != "en" || got.Models.ReviewRoles["PM"]["model"] != "pending-model" {
+	if got.Language != "en" || got.Models.ReviewRoles["PMQA"]["model"] != "pending-model" {
 		t.Fatal("doctor discarded pending edits")
 	}
-	if got.Reviewers["QA"] != "claude" || got.Models.ReviewRoles["QA"]["model"] != "opus" || !got.WelcomeComplete {
+	if got.Reviewers["large"]["Security"] != "claude" || got.Models.ReviewRoles["Security"]["model"] != "opus" || !got.WelcomeComplete {
 		t.Fatal("settings still contain stale values after repair")
 	}
 }
@@ -57,10 +59,9 @@ func TestDoctorInstallDecision(t *testing.T) {
 			case "escape":
 				drivePanel(panel, keyMsg("esc"))
 			case "confirm":
-				drivePanel(panel, keyMsg("left"))
-				drivePanel(panel, keyMsg("enter"))
+				drivePanel(panel, keyMsg("y"))
 			default:
-				drivePanel(panel, keyMsg("enter"))
+				drivePanel(panel, keyMsg("n"))
 			}
 			if action == "confirm" {
 				if app.pendingShell == nil || app.pendingWork != nil {

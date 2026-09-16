@@ -10,6 +10,7 @@ import (
 
 	"github.com/dualface/kander/internal/cli"
 	"github.com/dualface/kander/internal/config"
+	"github.com/dualface/kander/internal/issue"
 )
 
 func init() {
@@ -17,6 +18,11 @@ func init() {
 	cli.Commands["resume"] = RunResume
 	cli.Commands["dispatch"] = RunDispatch
 	cli.Commands["coordinator"] = RunCoordinator
+	cli.Commands["orchestrate"] = RunOrchestrate
+	// The issue command front end never imports this package; the takeover
+	// starter is wired here so every binary that can start agents also supports
+	// `kander issue triage` and the TUI's `s` confirmation.
+	issue.SetTriageStarter(StartTriage)
 }
 
 func fail(err error) int {
@@ -27,7 +33,7 @@ func fail(err error) int {
 func usage(w io.Writer, cmd string) {
 	if cmd == "start" {
 		fmt.Fprintln(w, t(
-			"launch.usage_kander_start_agent_codex_claude_grok_cursor_launcher",
+			"launch.usage_kander_start",
 		))
 		return
 	}
@@ -75,13 +81,13 @@ func parseAgentLauncher(args []string) (rest []string, agent, launcher string, a
 			if !ok {
 				return nil, "", "", false, t("launch.missing_launcher_value")
 			}
-			if !contains(config.Launchers, val) {
+			if !config.ValidLauncherName(val) {
 				return nil, "", "", false, t("launch.unknown_launcher", val)
 			}
 			launcher, i = val, next
 		case strings.HasPrefix(arg, "--launcher="):
 			val := strings.TrimPrefix(arg, "--launcher=")
-			if !contains(config.Launchers, val) {
+			if !config.ValidLauncherName(val) {
 				return nil, "", "", false, t("launch.unknown_launcher", val)
 			}
 			launcher = val
@@ -200,13 +206,13 @@ func RunResume(args []string) int {
 			if !ok {
 				return usageFail("resume", "launch.missing_launcher_value")
 			}
-			if !contains(config.Launchers, val) {
+			if !config.ValidLauncherName(val) {
 				return usageFail("resume", "launch.unknown_launcher", val)
 			}
 			launcher, i = val, next
 		case strings.HasPrefix(arg, "--launcher="):
 			val := strings.TrimPrefix(arg, "--launcher=")
-			if !contains(config.Launchers, val) {
+			if !config.ValidLauncherName(val) {
 				return usageFail("resume", "launch.unknown_launcher", val)
 			}
 			launcher = val

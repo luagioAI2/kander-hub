@@ -7,6 +7,7 @@ import (
 	"github.com/charmbracelet/x/ansi"
 	"github.com/dualface/kander/internal/board"
 	"github.com/dualface/kander/internal/launch"
+	"github.com/dualface/kander/internal/terminal"
 )
 
 type startRequest struct {
@@ -15,12 +16,6 @@ type startRequest struct {
 }
 
 type startNotice struct{ full, compact string }
-
-type startResult struct {
-	result   launch.StartResult
-	err      error
-	sequence uint64
-}
 
 func prepareTaskStart(id string) (startRequest, error) {
 	root, err := board.BoardRoot()
@@ -52,8 +47,10 @@ func runTaskStart(request startRequest) (result launch.StartResult, err error) {
 	return launch.Start(request.root, request.Agent, request.Launcher, request.TaskID)
 }
 
+// backgroundStartLauncher reports whether the launcher starts the agent in a
+// terminal container, leaving the board in control of this terminal.
 func backgroundStartLauncher(launcher string) bool {
-	return launcher == "herdr" || launcher == "tmux" || launcher == "tmux-session"
+	return terminal.HasCapability(launcher, func(c terminal.Capabilities) bool { return c.Container })
 }
 
 func (a *App) confirmSelectedStart() {
@@ -69,36 +66,34 @@ func (a *App) confirmSelectedStart() {
 	a.startSequence++
 	sequence, id, prepare := a.startSequence, selected.TaskID, a.PrepareStart
 	a.StartConfirmation = &startDialog{
-		startRequest: startRequest{StartPreview: launch.StartPreview{TaskID: id, State: selected.State}},
-		sequence:     sequence, phase: startLoading,
+		confirmDialog: confirmDialog{sequence: sequence, phase: confirmLoading},
+		startRequest:  startRequest{StartPreview: launch.StartPreview{TaskID: id, State: selected.State}},
 	}
 	a.pendingWork = func() any {
 		request, err := prepare(id)
-		return startPreviewResult{request: request, err: err, taskID: id, sequence: sequence}
+		return confirmWork{kind: workStartPreview, sequence: sequence, id: id, payload: request, err: err}
 	}
 	a.resetMouseSelection()
 }
 
-func (a *App) applyStartPreview(result startPreviewResult) {
+func (a *App) applyStartPreview(work confirmWork) {
 	dialog := a.StartConfirmation
-	if dialog == nil || dialog.phase != startLoading || dialog.sequence != result.sequence || dialog.TaskID != result.taskID {
+	if dialog == nil || !dialog.matches(work.sequence, confirmLoading) || dialog.TaskID != work.id {
 		return
 	}
 	selected := a.Model.SelectedTask()
-	if selected == nil || selected.TaskID != result.taskID {
+	if selected == nil || selected.TaskID != work.id {
 		a.StartConfirmation = nil
 		return
 	}
-	request, message := result.request, ""
+	request, _ := work.payload.(startRequest)
+	message := ""
 	switch {
-	case result.err != nil:
-		dialog.phase = startFinished
-		dialog.failed = true
-		dialog.message = t("tui.start_failed", result.err.Error())
+	case work.err != nil:
+		dialog.finish(t("tui.start_failed", work.err.Error()), true)
 		if len(request.Warnings) > 0 {
 			dialog.message = strings.Join(append([]string{dialog.message}, request.Warnings...), " ")
 		}
-		dialog.bodyView.GotoTop()
 		return
 	case request.State != "backlog" && request.State != "todo":
 		message = t("tui.start_invalid_state", request.State)
@@ -110,55 +105,56 @@ func (a *App) applyStartPreview(result startPreviewResult) {
 		a.showFocusNotice(strings.Join(append([]string{message}, request.Warnings...), " "))
 		return
 	}
-	dialog.startRequest, dialog.phase = request, startReady
+	dialog.startRequest, dialog.phase = request, confirmReady
 }
 
 func (a *App) handleStartConfirmation(key string) {
 	dialog := a.StartConfirmation
-	if dialog.phase == startRunning {
-		return
-	}
-	if dialog.phase == startFinished || key != "y" {
+	switch dialog.handleKey(key) {
+	case confirmWait:
+		a.showFocusNotice(t("dialog.loading_keys"))
+	case confirmCancel, confirmClose:
 		a.StartConfirmation = nil
-		return
-	}
-	if dialog.phase == startLoading {
-		a.showFocusNotice(t("tui.start_loading_keys"))
-		return
-	}
-	run, request, sequence := a.StartTask, dialog.startRequest, dialog.sequence
-	dialog.phase = startRunning
-	a.pendingWork = func() any {
-		result, err := run(request)
-		return startResult{result: result, err: err, sequence: sequence}
+	case confirmAccept:
+		run, request, sequence := a.StartTask, dialog.startRequest, dialog.sequence
+		dialog.run()
+		a.pendingWork = func() any {
+			result, err := run(request)
+			return confirmWork{kind: workStartResult, sequence: sequence, payload: result, err: err}
+		}
 	}
 }
 
-func (a *App) applyStartResult(result startResult) {
-	a.refreshBoard()
+func (a *App) applyStartResult(work confirmWork) {
+	result, _ := work.payload.(launch.StartResult)
+	id := strings.TrimSpace(result.TaskID)
+	if id == "" && a.StartConfirmation != nil {
+		id = strings.TrimSpace(a.StartConfirmation.startRequest.TaskID)
+	}
+	if id == "" {
+		a.invalidateSummaries()
+	} else {
+		a.invalidateSummaries(id)
+	}
+	a.requestBoardRefresh(true)
 	message := ""
 	compact := ""
-	if result.err != nil {
-		message = t("tui.start_failed", result.err.Error())
+	if work.err != nil {
+		message = t("tui.start_failed", work.err.Error())
 	} else {
-		r := result.result
-		address := r.Outcome.Tab + ":" + r.Outcome.Pane
-		if r.Plan.Launcher != "herdr" {
-			address = r.Plan.Session + ":" + r.Outcome.Window + ":" + r.Outcome.Pane
-		}
-		message = t("tui.start_success", r.TaskID, r.Agent, r.Plan.Launcher, address)
-		compact = t("tui.start_success_compact", r.Agent, r.Plan.Launcher, address)
+		address := launch.OpaqueAddress(result.Plan, result.Outcome)
+		message = t("tui.start_success", result.TaskID, result.Agent, result.Plan.Launcher, address)
+		compact = t("tui.start_success_compact", result.Agent, result.Plan.Launcher, address)
 	}
-	for _, warning := range result.result.Warnings {
+	for _, warning := range result.Warnings {
 		message += " " + warning
 		compact += " " + warning
 	}
-	if dialog := a.StartConfirmation; dialog != nil && dialog.phase == startRunning && dialog.sequence == result.sequence {
-		dialog.phase, dialog.message, dialog.failed = startFinished, message, result.err != nil
-		dialog.bodyView.GotoTop()
+	if dialog := a.StartConfirmation; dialog != nil && dialog.matches(work.sequence, confirmRunning) {
+		dialog.finish(message, work.err != nil)
 	}
 	a.showFocusNotice(message)
-	if result.err == nil {
+	if work.err == nil {
 		a.startNotice = &startNotice{a.CopyNotice, strings.ReplaceAll(printableText(ansi.Strip(compact)), "\n", " ")}
 	}
 }
@@ -176,7 +172,18 @@ func (a *App) renderStartPopup(lines []string) (popupBox, string) {
 }
 
 func (a *App) requestQuit() {
+	a.cancelOwnedReads()
+	if a.summaries != nil {
+		a.summaries.Close()
+		a.summaries = nil
+	}
 	a.Running = false
+}
+
+// confirmCapturesKeys reports whether a shared confirmation dialog owns input,
+// so Ctrl+C is ignored instead of quitting the board.
+func (a *App) confirmCapturesKeys() bool {
+	return a.StartConfirmation != nil || a.BoardInit != nil || a.Takeover != nil || (a.Options != nil && a.Options.confirm != nil)
 }
 
 func (a *App) activeStartNotice() bool {
@@ -195,4 +202,13 @@ func (a *App) displayNotice() string {
 
 func (a *App) startNoticeOverflows(width int) bool {
 	return a.activeStartNotice() && displayWidth(a.startNotice.compact) > width-1
+}
+
+func (a *App) startTargetValid() bool {
+	dialog := a.StartConfirmation
+	if dialog == nil {
+		return false
+	}
+	selected := a.Model.SelectedTask()
+	return selected != nil && selected.TaskID == dialog.TaskID
 }

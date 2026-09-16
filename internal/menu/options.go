@@ -6,6 +6,8 @@ import (
 
 	"github.com/dualface/kander/internal/config"
 	"github.com/dualface/kander/internal/install"
+	"github.com/dualface/kander/internal/terminal/builtin"
+	"github.com/dualface/kander/internal/terminal/direct"
 	"strings"
 )
 
@@ -24,6 +26,7 @@ type ModelField struct {
 	// Agent is the object this field belongs to (an agent on the execution side, a role on the review side),
 	// and together with field it forms the deduplication key.
 	Agent       string
+	kind        string
 	Prompt      string
 	entry       map[string]string
 	field       string
@@ -38,6 +41,14 @@ func (f ModelField) Key() string { return f.Agent + "." + f.field }
 
 // FieldName is the config key this field writes (model, effort, path, ...).
 func (f ModelField) FieldName() string { return f.field }
+
+// Kind is "kanban", "review", or "chat". Empty means kanban.
+func (f ModelField) Kind() string {
+	if f.kind == "" {
+		return "kanban"
+	}
+	return f.kind
+}
 
 // Value returns the current value of the field; an empty string means the CLI default is used.
 func (f ModelField) Value() string {
@@ -124,7 +135,7 @@ func (s *Session) prepare(configValid bool) error {
 		s.exec = append(s.exec, Choice{Value: name, Label: label})
 	}
 	if firstExecution == "" && !s.existing.WelcomeComplete {
-		return errors.New(config.Text("menu.no_usable_agent_found_version_must_succeed_install_codex"))
+		return errors.New(config.Text("menu.no_usable_agent_found_install_a_built_in_agent"))
 	}
 	for _, name := range config.ReviewAgentNames(s.existing) {
 		if reviewerUsable(s.agents[name]) {
@@ -133,7 +144,7 @@ func (s *Session) prepare(configValid bool) error {
 	}
 	if len(s.review) == 0 && !s.existing.WelcomeComplete {
 		return errors.New(config.Text(
-			"menu.no_usable_reviewer_found_install_codex_claude_grok_or",
+			"menu.no_usable_reviewer_found_install_a_built_in_agent",
 		))
 	}
 
@@ -146,6 +157,13 @@ func (s *Session) prepare(configValid bool) error {
 	for k, v := range s.existing.KanbanAgents {
 		cfg.KanbanAgents[k] = v
 	}
+	cfg.ChatAgent = s.existing.ChatAgent
+	if cfg.ChatAgent == "" {
+		cfg.ChatAgent = cfg.KanbanAgents["large"]
+		if cfg.ChatAgent == "" {
+			cfg.ChatAgent = s.existing.KanbanAgent
+		}
+	}
 	if !s.existing.WelcomeComplete {
 		if !agentUsable(s.agents[cfg.KanbanAgent]) {
 			cfg.KanbanAgent = firstExecution
@@ -156,12 +174,16 @@ func (s *Session) prepare(configValid bool) error {
 			}
 		}
 	}
-	cfg.Reviewers = map[string]string{}
-	for _, role := range config.ReviewRoles {
-		previous := s.existing.Reviewers[role]
-		cfg.Reviewers[role] = previous
-		if !s.existing.WelcomeComplete && !reviewerUsable(s.agents[previous]) {
-			cfg.Reviewers[role] = s.review[0].Value
+	cfg.Reviewers = cloneReviewStages(s.existing.Reviewers)
+	for _, scale := range config.TaskScales {
+		if cfg.Reviewers[scale] == nil {
+			cfg.Reviewers[scale] = map[string]string{}
+		}
+		for _, role := range config.ReviewRoles {
+			previous := cfg.Reviewers[scale][role]
+			if !s.existing.WelcomeComplete && !reviewerUsable(s.agents[previous]) {
+				cfg.Reviewers[scale][role] = s.review[0].Value
+			}
 		}
 	}
 	cfg.Launcher = s.existing.Launcher
@@ -223,26 +245,26 @@ func (s *Session) normalizeLauncher(cfg *config.Config) {
 		return
 	}
 	switch {
-	case isWindowsOS() && (cfg.Launcher == "tmux" || cfg.Launcher == "tmux-session"):
-		cfg.Launcher = "console"
+	case isWindowsOS() && (cfg.Launcher == builtin.Tmux || cfg.Launcher == builtin.TmuxSession):
+		cfg.Launcher = direct.Console
 		warning(config.Text(
 			"menu.windows_does_not_support_tmux_using_console",
 		))
-	case (cfg.Launcher == "tmux" || cfg.Launcher == "tmux-session") && lookPath("tmux") == "":
-		cfg.Launcher = "foreground"
+	case (cfg.Launcher == builtin.Tmux || cfg.Launcher == builtin.TmuxSession) && lookPath(builtin.TmuxExecutable) == "":
+		cfg.Launcher = direct.Foreground
 		warning(config.Text(
 			"menu.tmux_is_not_installed_using_foreground_the_launcher_menu",
 		))
 	// On POSIX auto holds as long as tmux exists, so a missing herdr must not
 	// rewrite it; on Windows auto can only land on herdr, so a missing herdr does.
-	case (cfg.Launcher == "herdr" || (cfg.Launcher == "auto" && isWindowsOS())) && lookPath("herdr") == "":
+	case (cfg.Launcher == builtin.Herdr || (cfg.Launcher == "auto" && isWindowsOS())) && lookPath(builtin.HerdrExecutable) == "":
 		switch {
 		case isWindowsOS():
-			cfg.Launcher = "console"
-		case lookPath("tmux") != "":
-			cfg.Launcher = "tmux"
+			cfg.Launcher = direct.Console
+		case lookPath(builtin.TmuxExecutable) != "":
+			cfg.Launcher = builtin.Tmux
 		default:
-			cfg.Launcher = "foreground"
+			cfg.Launcher = direct.Foreground
 		}
 		warning(config.Text(
 			"menu.herdr_is_not_installed_using", cfg.Launcher,
@@ -266,16 +288,47 @@ func (s *Session) ReviewerChoicesFor(current string) []Choice {
 }
 
 // SetExecutionAgent sets the execution agent of one task scale (large/small).
+// On the Project tab the choice is written as an override and that scale's model
+// fields are copied into the overlay so they stop showing as inherited globals.
 func (s *Session) SetExecutionAgent(scale, agent string) {
+	prev := ""
+	if s.Config != nil && s.Config.KanbanAgents != nil {
+		prev = s.Config.KanbanAgents[scale]
+	}
 	s.Config.KanbanAgents[scale] = agent
 	s.Config.KanbanAgent = s.Config.KanbanAgents["large"]
-	s.noteOverride([]string{"kanban_agents", scale}, agent)
+	if !s.EditingOverlay() {
+		s.noteOverride([]string{"kanban_agents", scale}, agent)
+		return
+	}
+	_ = s.applyOverlayEdit(func(candidate map[string]any) {
+		if prev != "" && prev != agent {
+			deleteKanbanScaleModelKeys(candidate, prev, scale)
+		}
+		config.OverlaySet(candidate, agent, "kanban_agents", scale)
+	})
+	for _, field := range s.ExecutionModelFieldsFor(scale) {
+		s.NoteModelOverride(field, field.Value())
+	}
 }
 
-// SetReviewer sets the reviewer of one review role.
-func (s *Session) SetReviewer(role, agent string) {
-	s.Config.Reviewers[role] = agent
-	s.noteOverride([]string{"reviewers", role}, agent)
+// SetReviewer changes a role's reviewer and adopts that agent's model settings.
+func (s *Session) SetReviewer(scale, role, agent string) {
+	if config.ReviewerFor(s.Config, scale, role) == agent {
+		return
+	}
+	if s.Config.Reviewers == nil {
+		s.Config.Reviewers = map[string]map[string]string{}
+	}
+	if s.Config.Reviewers[scale] == nil {
+		s.Config.Reviewers[scale] = map[string]string{}
+	}
+	s.Config.Reviewers[scale][role] = agent
+	if s.EditingOverlay() {
+		s.expandOverlayReviewers()
+	}
+	s.noteOverride([]string{"reviewers", scale, role}, agent)
+	s.ResetReviewRoleModel(role, scale)
 }
 
 // SetReviewStage sets the stage policy of one review role for one task scale.
@@ -320,11 +373,12 @@ func (s *Session) LauncherChoices() []Choice {
 	if isWindowsOS() {
 		return windowsLauncherChoices(s.Config)
 	}
-	foreground := Choice{Value: "foreground", Label: config.Text("menu.foreground_in_this_terminal")}
+	foreground := Choice{Value: direct.Foreground, Label: config.Text("menu.foreground_in_this_terminal")}
 	choices := []Choice{autoLauncherChoice()}
-	if lookPath("tmux") != "" {
+	if lookPath(builtin.TmuxExecutable) != "" {
 		choices = append(choices, tmuxLauncherChoices()...)
 		choices = append(choices, herdrLauncherChoices(s.Config)...)
+		choices = append(choices, definitionLauncherChoices()...)
 		return append(choices, foreground)
 	}
 	unavailable := config.Text("menu.not_currently_installed")
@@ -334,6 +388,7 @@ func (s *Session) LauncherChoices() []Choice {
 		}
 	}
 	choices = append(choices, herdrLauncherChoices(s.Config)...)
+	choices = append(choices, definitionLauncherChoices()...)
 	return append(choices, foreground, Choice{
 		Value: LauncherInstallValue,
 		Label: config.Text("menu.install_tmux_and_use_a_new_window"),
@@ -415,14 +470,14 @@ func (s *Session) ExecutionModelFieldsFor(scale string) []ModelField {
 	}
 	fields := []ModelField{s.kanbanModelField(agent, scale+"_model",
 		config.Text("menu.kanban_model", label, scaleLabel),
-		config.Text("menu.model", label, scaleLabel),
+		config.Text("menu.field_model"),
 		config.Text("menu.full_model_id_for_s", scaleLabel))}
 	if !config.AgentSupportsEffort(s.Config, agent) {
 		return fields
 	}
 	return append(fields, s.kanbanModelField(agent, scale+"_effort",
 		config.Text("menu.kanban_reasoning_effort", label, scaleLabel),
-		config.Text("menu.effort", label, scaleLabel),
+		config.Text("menu.field_effort"),
 		config.Text("menu.reasoning_effort_for_s", scaleLabel)))
 }
 
@@ -442,69 +497,125 @@ func (s *Session) ExecutionModelFields() []ModelField {
 	return out
 }
 
-// ReviewModelFieldsFor returns the model fields of one review role.
-// Every role stores its own concrete values, so what the UI shows is what is used, with no hidden inheritance layer;
-// while a role has no value yet, it is filled in from the default of its selected reviewer.
-func (s *Session) ReviewModelFieldsFor(role string) []ModelField {
-	reviewer := s.Config.Reviewers[role]
+// SetChatAgent sets the TUI chat execution agent. Project edits write only
+// chat_agent; model fields stay inherited until the user edits them.
+func (s *Session) SetChatAgent(agent string) {
+	if s == nil || s.Config == nil {
+		return
+	}
+	s.materializeChatEntry(agent)
+	s.Config.ChatAgent = agent
+	s.noteOverride([]string{"chat_agent"}, agent)
+}
+
+func (s *Session) materializeChatEntry(agent string) {
+	if s == nil || s.Config == nil || agent == "" {
+		return
+	}
+	config.EnsureChatEntry(s.Config, agent)
+}
+
+// ChatModelFieldsFor returns the model fields of the current Chat Agent.
+func (s *Session) ChatModelFieldsFor() []ModelField {
+	if s == nil || s.Config == nil {
+		return nil
+	}
+	agent := s.Config.ChatAgent
+	if agent == "" {
+		agent = s.Config.KanbanAgents["large"]
+	}
+	if agent == "" {
+		return nil
+	}
+	s.materializeChatEntry(agent)
+	label := agentLabels()[agent]
+	if label == "" {
+		label = agent
+	}
+	fields := []ModelField{{
+		Label:  config.Text("menu.chat_model"),
+		Short:  config.Text("menu.field_model"),
+		Agent:  agent,
+		kind:   "chat",
+		Prompt: config.Text("menu.full_model_id_for_s", label),
+		entry:  s.Config.Models.Chat[agent],
+		field:  "model",
+	}}
+	if !config.AgentSupportsEffort(s.Config, agent) {
+		return fields
+	}
+	return append(fields, ModelField{
+		Label:  config.Text("menu.chat_effort"),
+		Short:  config.Text("menu.field_effort"),
+		Agent:  agent,
+		kind:   "chat",
+		Prompt: config.Text("menu.reasoning_effort_for", label),
+		entry:  s.Config.Models.Chat[agent],
+		field:  "effort",
+	})
+}
+
+// ReviewModelFieldsFor returns the model fields of one review role at one task scale.
+// Fields display the runtime values for the selected reviewer. Stored overrides
+// owned by another agent remain unchanged until the selection is edited.
+func (s *Session) ReviewModelFieldsFor(role, scale string) []ModelField {
+	reviewer := config.ReviewerFor(s.Config, scale, role)
 	if reviewer == "" {
 		return nil
 	}
-	entry := s.seedReviewRole(role, reviewer)
+	entry := s.seedReviewRole(role, scale, reviewer)
+	scaleLabel := config.Text("menu.large_task")
+	if scale == "small" {
+		scaleLabel = config.Text("menu.small_task")
+	}
 	fields := []ModelField{{
-		Label:  config.Text("menu.review_model", role),
-		Short:  config.Text("menu.model_2", role),
+		Label:  config.Text("menu.review_model", role) + " (" + scaleLabel + ")",
+		Short:  config.Text("menu.field_model"),
 		Agent:  role,
+		kind:   "review",
 		Prompt: config.Text("menu.which_model_should_use", role),
 		entry:  entry,
-		field:  "model",
+		field:  scale + "_model",
 	}}
 	if !config.ReviewModelSupportsEffort(s.Config, reviewer) {
 		return fields
 	}
 	return append(fields, ModelField{
-		Label:  config.Text("menu.review_reasoning_effort", role),
-		Short:  config.Text("menu.effort_2", role),
+		Label:  config.Text("menu.review_reasoning_effort", role) + " (" + scaleLabel + ")",
+		Short:  config.Text("menu.field_effort"),
 		Agent:  role,
+		kind:   "review",
 		Prompt: config.Text("menu.reasoning_effort_for", role),
 		entry:  entry,
-		field:  "effort",
+		field:  scale + "_effort",
 	})
 }
 
-// seedReviewRole makes sure the role owns its values: whichever item is missing is filled in from that reviewer's default.
-func (s *Session) seedReviewRole(role, reviewer string) map[string]string {
+// seedReviewRole presents the same effective values used by the review runner.
+func (s *Session) seedReviewRole(role, scale, reviewer string) map[string]string {
 	entry := s.Config.Models.ReviewRoles[role]
 	if entry == nil {
 		entry = map[string]string{}
 		s.Config.Models.ReviewRoles[role] = entry
 	}
-	agentEntry := s.Config.Models.Review[reviewer]
-	if entry["model"] == "" {
-		entry["model"] = agentEntry["model"]
+	model, effort := config.ReviewModelFor(s.Config, reviewer, role, scale)
+	if owner := entry[scale+"_agent"]; owner != "" && owner != reviewer {
+		// Presentation must not relabel another agent's stored values on Save.
+		return map[string]string{scale + "_model": model, scale + "_effort": effort}
 	}
-	if _, ok := agentEntry["effort"]; ok && entry["effort"] == "" {
-		entry["effort"] = agentEntry["effort"]
-	}
+	entry[scale+"_model"] = model
+	entry[scale+"_effort"] = effort
 	return entry
 }
 
-// ResetReviewRoleModel resets the model and reasoning effort of one role to the defaults of its new reviewer.
-// Call it when a role changes reviewer: the old values were configured for the old reviewer and would otherwise be misattributed.
-func (s *Session) ResetReviewRoleModel(role string) {
-	if s.EditingOverlay() {
-		_ = s.applyOverlayEdit(func(candidate map[string]any) {
-			config.OverlayDelete(candidate, "models", "review_roles", role)
-		})
-		return
-	}
-	s.Config.Models.ReviewRoles[role] = map[string]string{}
-	entry := s.seedReviewRole(role, s.Config.Reviewers[role])
-	rawEntry := map[string]any{}
-	for key, value := range entry {
-		rawEntry[key] = value
-	}
-	s.noteOverride([]string{"models", "review_roles", role}, rawEntry)
+// ResetReviewRoleModel resets the model and reasoning effort of one role at one
+// scale to the defaults of its new reviewer. Call it when a role changes
+// reviewer: the old values were configured for the old reviewer and would
+// otherwise be misattributed.
+func (s *Session) ResetReviewRoleModel(role, scale string) {
+	reviewer := config.ReviewerFor(s.Config, scale, role)
+	agentEntry := s.Config.Models.Review[reviewer]
+	s.setReviewRoleSelection(role, scale, reviewer, agentEntry["model"], agentEntry["effort"])
 }
 
 // ReviewModelFields is the flattened, order-preserving deduplication of the per-role fields, for the line-based menu.
@@ -512,12 +623,14 @@ func (s *Session) ReviewModelFields() []ModelField {
 	var out []ModelField
 	seen := map[string]struct{}{}
 	for _, role := range config.ReviewRoles {
-		for _, field := range s.ReviewModelFieldsFor(role) {
-			if _, ok := seen[field.Key()]; ok {
-				continue
+		for _, scale := range config.TaskScales {
+			for _, field := range s.ReviewModelFieldsFor(role, scale) {
+				if _, ok := seen[field.Key()]; ok {
+					continue
+				}
+				seen[field.Key()] = struct{}{}
+				out = append(out, field)
 			}
-			seen[field.Key()] = struct{}{}
-			out = append(out, field)
 		}
 	}
 	return out
@@ -589,19 +702,21 @@ func (s *Session) Summary() []string {
 	cfg := s.Config
 	lines := []string{config.Text("menu.current_configuration")}
 	lines = append(lines, config.Text("rules.modules")+": "+config.FormatRulesSummary(cfg.Rules))
-	for _, agent := range config.ExecutionAgentsInUse(cfg) {
+	for _, agent := range config.KanbanAgentsInUse(cfg) {
 		entry := cfg.Models.Kanban[agent]
 		lines = append(lines, "  kanban "+agent+": "+config.FormatKanbanModelSummary(s.Config, agent, entry))
 	}
 	seen := map[string]struct{}{}
-	for _, role := range config.ReviewRoles {
-		reviewer := cfg.Reviewers[role]
-		if _, ok := seen[reviewer]; ok {
-			continue
+	for _, scale := range config.TaskScales {
+		for _, role := range config.ReviewRoles {
+			reviewer := config.ReviewerFor(cfg, scale, role)
+			if _, ok := seen[reviewer]; ok {
+				continue
+			}
+			seen[reviewer] = struct{}{}
+			entry := cfg.Models.Review[reviewer]
+			lines = append(lines, "  review "+reviewer+": "+config.FormatReviewModelSummary(entry))
 		}
-		seen[reviewer] = struct{}{}
-		entry := cfg.Models.Review[reviewer]
-		lines = append(lines, "  review "+reviewer+": "+config.FormatReviewModelSummary(entry))
 	}
 	return lines
 }
@@ -642,7 +757,14 @@ func NewSessionForTest(existing *config.Config) (*Session, error) {
 	cfg.Models = copyModels(existing.Models)
 	cfg.KanbanAgent = existing.KanbanAgent
 	cfg.KanbanAgents = cloneStrings(existing.KanbanAgents)
-	cfg.Reviewers = cloneStrings(existing.Reviewers)
+	cfg.ChatAgent = existing.ChatAgent
+	if cfg.ChatAgent == "" {
+		cfg.ChatAgent = cfg.KanbanAgents["large"]
+		if cfg.ChatAgent == "" {
+			cfg.ChatAgent = existing.KanbanAgent
+		}
+	}
+	cfg.Reviewers = cloneReviewStages(existing.Reviewers)
 	cfg.ReviewStages = cloneReviewStages(existing.ReviewStages)
 	cfg.Rules = existing.Rules.Clone()
 	cfg.Launcher = existing.Launcher

@@ -1,6 +1,7 @@
 package launch
 
 import (
+	"slices"
 	"strings"
 
 	"github.com/dualface/kander/internal/board"
@@ -120,7 +121,7 @@ func commandDecompose(args DecomposeArgs) error {
 	// that lock for the whole call: holding it and then re-entering any of those
 	// helpers would deadlock on the same exclusive lock file.
 
-	original, err := readRequirementFn(root, reqID)
+	original, err := board.ReadRequirementDocument(root, reqID)
 	if err != nil {
 		return err
 	}
@@ -139,7 +140,7 @@ func commandDecompose(args DecomposeArgs) error {
 			return err
 		}
 	}
-	if !contains(config.ExecutionAgents, agentName) {
+	if !slices.Contains(config.ExecutionAgents, agentName) {
 		return launchError("launch.unsupported_agent", agentName)
 	}
 	launcher := args.Launcher
@@ -150,12 +151,17 @@ func commandDecompose(args DecomposeArgs) error {
 	if err != nil {
 		return err
 	}
-	applyAgentLaunchEnv(&plan, agentName)
-	program, err := requireAgentProgram(agentName)
+	// applyAgentDelivery fills the plan's prompt delivery from the agent
+	// definition (DSH declares pane delivery with a "dsh >" readiness match)
+	// and its extra environment (DSH_PERMISSION_MODE).
+	if err := applyAgentDelivery(&plan, cfg, agentName); err != nil {
+		return err
+	}
+	program, err := requireAgentProgram(agentName, cfg)
 	if err != nil {
 		return err
 	}
-	session, err := newAgentSession(agentName, program)
+	session, err := newAgentSession(agentName, program, cfg)
 	if err != nil {
 		return err
 	}
@@ -185,26 +191,21 @@ func commandDecompose(args DecomposeArgs) error {
 		}
 	}()
 	prompt := taskInstruction(t("launch.prompt.decompose_head", reqID), taskFile)
-	isDSH := agentName == "dsh"
 	// Decomposition uses the large scale model by default because reading
 	// the requirement, asking clarifying questions, and producing N task
 	// specs is naturally a large-scope job.
 	model := cfg.Models.Kanban[agentName]
-	args2, err := agentArguments(agentName, model, "large", session, false)
+	args2, err := agentArguments(agentName, model, "large", session, false, cfg)
 	if err != nil {
 		return err
 	}
-	if agentName == "dsh" {
-		// The dsh tui profile ignores a positional prompt; the decompose
-		// instruction is injected into the live TUI after launch (see below).
-		// The task file stays on disk so the orchestrator can read it too.
-		isDSH = true
-		prompt = ""
-		taskFileHandedOff = true
-	} else {
-		args2 = append(args2, prompt)
-	}
-	inv, err := launchInvocation(plan, *program, args2)
+	// attachPrompt hands the instruction to whatever delivery mode the agent
+	// definition declares: an argv agent gets it appended to argv, while a pane
+	// agent (DSH) has it typed into the ready TUI by launchAgent's pane
+	// delivery. The readiness match and its budget come from the definition's
+	// prompt_delivery block, so this command carries no agent-specific
+	// injection logic of its own.
+	inv, err := launchInvocation(plan, *program, attachPrompt(&plan, args2, prompt))
 	if err != nil {
 		return err
 	}
@@ -212,74 +213,23 @@ func commandDecompose(args DecomposeArgs) error {
 	if err != nil {
 		return err
 	}
-	if err := writeRequirementFn(root, reqID, updated); err != nil {
+	if err := board.WriteRequirementDocument(root, reqID, updated); err != nil {
 		return err
 	}
+	// A container backend produces a pane address worth recording on the
+	// requirement card; a direct launcher (foreground/console) has none.
 	loc := (func(LaunchOutcome) error)(nil)
-	if plan.Launcher == "herdr" || plan.Launcher == "tmux" || plan.Launcher == "tmux-session" {
+	if plan.capabilities().Container {
 		loc = recordRequirementWindowLocation(root, plan, reqID)
 	}
-	// Re-running decompose on the same requirement should reuse its existing
-	// deploy window rather than create a brand-new one each time; otherwise
-	// orphan dsh windows pile up on the tmux server. If the previously
-	// recorded address is still reachable, hand it to launchAgent as a reuse
-	// target so it restarts the agent inside that pane.
-	if plan.Launcher == "tmux-session" || plan.Launcher == "tmux" {
-		if oldSession, oldWindow, oldPane, ok := tmuxAddress(board.ParseRequirementWindow(original)); ok &&
-			oldSession == plan.Session && staleWindowAlive(plan.Tmux, oldSession, oldWindow) {
-			plan.ReuseWindow = oldWindow
-			plan.ReusePane = oldPane
-		}
-	}
+	// Re-running decompose on the same requirement no longer reuses a recorded
+	// window explicitly: the terminal layer owns that concern now, because the
+	// tmux-session launcher resolves a stable per-project session and reuses it
+	// (Target.SessionExists) instead of piling up orphan sessions.
 	outcome, err := launchAgent(plan, root, "req-"+reqID, inv, loc, nil, &session)
 	if err != nil {
 		return err
 	}
-	// Feed the decompose instruction into the live dsh TUI so the orchestrator
-	// actually works the requirement instead of sitting at a blank prompt.
-	// injectDSHTask polls for the dsh> prompt, then pastes the full body.
-	if isDSH {
-		if injectErr := injectDSHTask(plan, outcome, body); injectErr != nil {
-			return injectErr
-		}
-	}
 	taskFileHandedOff = true
 	return reportLaunch(t("launch.started"), board.Entry{TaskID: "req-" + reqID}, agentName, plan, outcome)
-}
-
-// tmuxAddress parses a stored "<launcher>:<session>:<window>:<pane>" WINDOW
-// value into its session, window and pane address. False unless it is a plain
-// tmux/tmux-session address on the default server.
-func tmuxAddress(stored string) (session, window, pane string, ok bool) {
-	if stored == "" || !strings.HasPrefix(stored, "tmux") {
-		return "", "", "", false
-	}
-	parts := strings.Split(stored, ":")
-	if len(parts) >= 4 {
-		return parts[1], parts[2], parts[3], true
-	}
-	return "", "", "", false
-}
-
-// staleWindowAlive reports whether a recorded tmux window (by session:window
-// id) still exists, so decompose can reuse it instead of opening a new one. A
-// window whose server or session is gone returns false and forces a fresh
-// launch. list-windows -t <session> fails with a non-zero exit when the
-// session is missing, and lists the live window ids otherwise (display-message
-// is not reliable here: it returns exit 0 with empty output for an absent
-// target).
-func staleWindowAlive(tmux, session, window string) bool {
-	if session == "" || window == "" {
-		return false
-	}
-	res := tmuxCapture(tmux, "list-windows", "-t", session, "-F", "#{window_id}")
-	if res.Code != 0 {
-		return false
-	}
-	for _, line := range strings.Split(res.Stdout, "\n") {
-		if strings.TrimSpace(line) == window {
-			return true
-		}
-	}
-	return false
 }

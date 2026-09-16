@@ -6,25 +6,26 @@
     "large": "cursor",
     "small": "cursor"
   },
+  "chat_agent": "cursor",
   "launcher": "tmux",
   "reviewers": {
-    "CSA": "cursor",
-    "Hacker": "cursor",
-    "PM": "cursor",
-    "QA": "cursor"
+    "large": {
+      "PMQA": "cursor",
+      "Security": "cursor"
+    },
+    "small": {
+      "PMQA": "cursor",
+      "Security": "cursor"
+    }
   },
   "review_stages": {
     "large": {
-      "CSA": "auto",
-      "Hacker": "auto",
-      "PM": "auto",
-      "QA": "auto"
+      "PMQA": "auto",
+      "Security": "auto"
     },
     "small": {
-      "CSA": "auto",
-      "Hacker": "auto",
-      "PM": "auto",
-      "QA": "auto"
+      "PMQA": "auto",
+      "Security": "auto"
     }
   },
   "rules": {
@@ -69,6 +70,13 @@
         "model": "",
         "small_effort": "high",
         "small_model": ""
+      },
+      "pi": {
+        "large_effort": "high",
+        "large_model": "",
+        "model": "",
+        "small_effort": "medium",
+        "small_model": ""
       }
     },
     "review": {
@@ -90,23 +98,52 @@
       "grok": {
         "effort": "high",
         "model": ""
+      },
+      "pi": {
+        "effort": "high",
+        "model": ""
       }
     },
     "review_roles": {
-      "CSA": {
+      "PMQA": {
         "effort": "",
+        "large_agent": "",
+        "large_effort": "",
+        "large_model": "",
+        "model": "",
+        "small_agent": "",
+        "small_effort": "",
+        "small_model": ""
+      },
+      "Security": {
+        "effort": "",
+        "large_agent": "",
+        "large_effort": "",
+        "large_model": "",
+        "model": "",
+        "small_agent": "",
+        "small_effort": "",
+        "small_model": ""
+      }
+    },
+    "chat": {
+      "claude": {
+        "effort": "high",
+        "model": "opus"
+      },
+      "codex": {
+        "effort": "high",
+        "model": "gpt-5.6-sol"
+      },
+      "cursor": {
+        "model": "cursor-grok-4.6-xhigh"
+      },
+      "grok": {
+        "effort": "xhigh",
         "model": ""
       },
-      "Hacker": {
-        "effort": "",
-        "model": ""
-      },
-      "PM": {
-        "effort": "",
-        "model": ""
-      },
-      "QA": {
-        "effort": "",
+      "pi": {
+        "effort": "high",
         "model": ""
       }
     }
