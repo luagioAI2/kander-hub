@@ -59,3 +59,7 @@ kander
 ## 3. ライセンス
 
 本プロジェクトは MIT License を使用しています。[LICENSE](LICENSE) を参照してください。
+
+## 4. 変更履歴
+
+リリースノートは [CHANGELOG.md](CHANGELOG.md) を参照してください。

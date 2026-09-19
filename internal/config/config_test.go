@@ -127,7 +127,7 @@ func TestSourceTreeEntryKeepsGlobalHomePaths(t *testing.T) {
 	if paths.ConfigPath != filepath.Join(home, ".config", "kander", "config.json") {
 		t.Fatalf("config=%s", paths.ConfigPath)
 	}
-	if paths.RulesDir != filepath.Join(home, ".agents") {
+	if paths.RulesDir != filepath.Join(home, ".agents", "kander") {
 		t.Fatalf("rules=%s", paths.RulesDir)
 	}
 	if paths.BinDir != filepath.Join(home, ".local", "bin") {
@@ -742,6 +742,35 @@ func TestUpdateAndSaveIfUnchangedPreventLostUpdate(t *testing.T) {
 	}
 	if loaded.TUI.Theme != "light" || !loaded.Rules[RuleReview] {
 		t.Fatalf("concurrent update was overwritten: %+v", loaded)
+	}
+}
+
+func TestSaveIfUnchangedAcceptsClonedNullAgentArgs(t *testing.T) {
+	root := setupHome(t)
+	path := filepath.Join(root, "config.json")
+	t.Setenv(EnvConfig, path)
+	initial := DefaultConfig()
+	initial.WelcomeComplete = true
+	initial.Agents = map[string]AgentDefinition{
+		"custom": {
+			Args:    &AgentArgs{Start: []string{"run"}, Resume: nil},
+			Session: &AgentSessionDefinition{Mode: "none"},
+		},
+	}
+	if _, err := Save(initial); err != nil {
+		t.Fatal(err)
+	}
+	baseline, err := LoadScope(false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	edited := Clone(baseline)
+	edited.Launcher = "foreground"
+	if edited.Agents["custom"].Args.Resume != nil {
+		t.Fatal("clone changed a nil resume template into an empty slice")
+	}
+	if _, err := SaveIfUnchanged(edited, baseline); err != nil {
+		t.Fatalf("unchanged config reported a conflict: %v", err)
 	}
 }
 

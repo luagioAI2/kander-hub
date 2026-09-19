@@ -59,3 +59,7 @@ kander
 ## 3. 许可
 
 本项目使用 MIT License, 见 [LICENSE](LICENSE).
+
+## 4. 更新日志
+
+发布说明见 [CHANGELOG.md](CHANGELOG.md)。

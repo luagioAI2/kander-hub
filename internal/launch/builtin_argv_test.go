@@ -1,6 +1,7 @@
 package launch
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -9,6 +10,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/dualface/kander/internal/board"
 	"github.com/dualface/kander/internal/config"
 	"github.com/dualface/kander/internal/process"
 )
@@ -17,7 +19,7 @@ func TestBuiltinAgentArgumentsMatchPreChangeOutput(t *testing.T) {
 	cfg := config.DefaultConfig()
 	models := cfg.Models.Kanban
 	const sid = "session-id"
-	for _, agent := range []string{"codex", "claude", "grok", "cursor", "dsh"} {
+	for _, agent := range []string{"codex", "claude", "grok", "cursor", "dsh", "devin", "opencode", "kimi"} {
 		for _, kind := range []string{"large", "small"} {
 			for _, resume := range []bool{false, true} {
 				for _, hasSession := range []bool{true, false} {
@@ -78,6 +80,31 @@ func TestBuiltinAgentArgumentsMatchPreChangeOutput(t *testing.T) {
 						if resume && ref != "" {
 							want = append(want, "--resume", ref)
 						}
+					case "devin":
+						if modelID != "" {
+							want = append(want, "--model", modelID)
+						}
+						want = append(want, "--permission-mode", "dangerous", "--respect-workspace-trust", "false")
+						if resume && ref != "" {
+							want = append(want, "--resume", ref)
+						}
+						want = append(want, "--")
+					case "opencode":
+						if modelID != "" {
+							want = append(want, "--model", modelID)
+						}
+						if resume && ref != "" {
+							want = append(want, "--session", ref)
+						}
+						want = append(want, "--auto", "--prompt")
+					case "kimi":
+						want = append(want, "--auto")
+						if modelID != "" {
+							want = append(want, "--model", modelID)
+						}
+						if resume && ref != "" {
+							want = append(want, "--session", ref)
+						}
 					}
 					name := agent + "/" + kind
 					if resume {
@@ -120,7 +147,25 @@ func TestBuiltinStartKeepsPromptOnArgvAndDoesNotDeliverToPane(t *testing.T) {
 	t.Cleanup(func() { newShellInvocation = previous })
 	for _, launcher := range []string{"tmux", "herdr"} {
 		for _, agent := range config.ExecutionAgents {
+			definition := config.AgentFor(nil, agent)
+			if definition.PromptDelivery != nil && definition.PromptDelivery.Mode == "pane" {
+				continue
+			}
 			t.Run(launcher+"/"+agent, func(t *testing.T) {
+				session := definition.Session
+				discovered := session != nil && session.Mode == "discovered"
+				if discovered {
+					previousList := enumerateSessionsFn
+					calls := 0
+					enumerateSessionsFn = func(context.Context, *config.SessionDiscovery, *process.AgentProgram, string, string) ([]string, error) {
+						calls++
+						if calls == 1 {
+							return nil, nil
+						}
+						return []string{agent + "-session"}, nil
+					}
+					defer func() { enumerateSessionsFn = previousList }()
+				}
 				captured = nil
 				id, _ := makeTodo(t, root, "argv-"+launcher+"-"+agent)
 				_, _, err := capture(t, func() error { return commandStart(root, agent, launcher, id) })
@@ -135,6 +180,15 @@ func TestBuiltinStartKeepsPromptOnArgvAndDoesNotDeliverToPane(t *testing.T) {
 				}
 				if _, err := os.Stat(herdrLog + ".prompt"); !os.IsNotExist(err) {
 					t.Fatalf("argv path used agent prompt: %v", err)
+				}
+				if discovered {
+					snapshot, err := board.ReadSnapshot(root, id)
+					if err != nil {
+						t.Fatal(err)
+					}
+					if !strings.Contains(snapshot.Text, "- SESSION: "+agent+" "+agent+"-session\n") {
+						t.Fatalf("card session was not persisted: %s", snapshot.Text)
+					}
 				}
 			})
 		}

@@ -7,7 +7,7 @@
     "small": "codex"
   },
   "chat_agent": "codex",
-  "launcher": "auto",
+  "launcher": "console",
   "reviewers": {
     "large": {
       "PMQA": "codex",
@@ -57,6 +57,10 @@
         "large_model": "cursor-grok-4.6-xhigh",
         "small_model": "cursor-grok-4.6-high"
       },
+      "devin": {
+        "large_model": "swe-2-max",
+        "small_model": "swe-2-max"
+      },
       "dsh": {
         "large_effort": "max",
         "large_model": "deepseek-v4-pro",
@@ -70,6 +74,17 @@
         "model": "",
         "small_effort": "high",
         "small_model": ""
+      },
+      "kimi": {
+        "large_model": "",
+        "small_model": ""
+      },
+      "opencode": {
+        "large_effort": "high",
+        "large_model": "opencode-go/deepseek-v4.1-flash",
+        "model": "",
+        "small_effort": "medium",
+        "small_model": "opencode-go/deepseek-v4.1-flash"
       }
     },
     "review": {
@@ -84,6 +99,9 @@
       "cursor": {
         "model": "cursor-grok-4.6-xhigh"
       },
+      "devin": {
+        "model": "swe-2-max"
+      },
       "dsh": {
         "effort": "max",
         "model": "deepseek-v4-flash"
@@ -91,6 +109,13 @@
       "grok": {
         "effort": "high",
         "model": ""
+      },
+      "kimi": {
+        "model": ""
+      },
+      "opencode": {
+        "effort": "high",
+        "model": "opencode-go/deepseek-v4.1-flash"
       }
     },
     "review_roles": {
@@ -127,6 +152,9 @@
       "cursor": {
         "model": "cursor-grok-4.6-xhigh"
       },
+      "devin": {
+        "model": "swe-2-max"
+      },
       "dsh": {
         "effort": "max",
         "model": "deepseek-v4-pro"
@@ -134,6 +162,13 @@
       "grok": {
         "effort": "xhigh",
         "model": ""
+      },
+      "kimi": {
+        "model": ""
+      },
+      "opencode": {
+        "effort": "high",
+        "model": "opencode-go/deepseek-v4.1-flash"
       }
     }
   },

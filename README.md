@@ -59,3 +59,7 @@ On the terminal board, press `g` to open the GitHub issue list in an overlay.
 ## 3. License
 
 This project is under the MIT License; see [LICENSE](LICENSE).
+
+## 4. Changelog
+
+Release notes live in [CHANGELOG.md](CHANGELOG.md).

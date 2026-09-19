@@ -7,12 +7,14 @@ const sessionHookPrefix = "hook:"
 // SessionHook is a named Go capability that argv templates cannot express.
 type SessionHook struct {
 	Name string
-	// DiscoverAfterStart snapshots existing sessions and waits for a new id after tmux launch.
+	// DiscoverAfterStart snapshots existing sessions and waits for a new id after launch.
 	DiscoverAfterStart bool
 	// ResolveEmptyReference scans for an existing session when SESSION has no id.
 	ResolveEmptyReference bool
 	// AllocateBeforeStart obtains a session id before the agent process starts.
 	AllocateBeforeStart bool
+	// PersistAfterStart writes a discovered session id back to the task card.
+	PersistAfterStart bool
 }
 
 var registeredSessionHooks = []SessionHook{
@@ -52,24 +54,51 @@ func LookupSessionHook(mode string) (SessionHook, bool) {
 }
 
 func validDeclaredSessionMode(mode string) bool {
-	if contains([]string{"generated", "allocated", "none"}, mode) {
+	if contains([]string{"generated", "allocated", "none", "discovered"}, mode) {
 		return true
 	}
 	_, ok := LookupSessionHook(mode)
 	return ok
 }
 
-func SessionDiscoversAfterStart(mode string) bool {
-	hook, ok := LookupSessionHook(mode)
+// SessionDiscoversAfterStart reports whether launch must snapshot sessions
+// before start and identify the new one afterwards.
+func SessionDiscoversAfterStart(s *AgentSessionDefinition) bool {
+	if s == nil {
+		return false
+	}
+	if s.Mode == "discovered" {
+		return true
+	}
+	hook, ok := LookupSessionHook(s.Mode)
 	return ok && hook.DiscoverAfterStart
 }
 
-func SessionResolvesEmptyReference(mode string) bool {
-	hook, ok := LookupSessionHook(mode)
+func SessionResolvesEmptyReference(s *AgentSessionDefinition) bool {
+	if s == nil {
+		return false
+	}
+	hook, ok := LookupSessionHook(s.Mode)
 	return ok && hook.ResolveEmptyReference
 }
 
-func SessionAllocatesBeforeStart(mode string) bool {
-	hook, ok := LookupSessionHook(mode)
+func SessionAllocatesBeforeStart(s *AgentSessionDefinition) bool {
+	if s == nil {
+		return false
+	}
+	hook, ok := LookupSessionHook(s.Mode)
 	return ok && hook.AllocateBeforeStart
+}
+
+// SessionPersistsAfterStart reports whether a discovered id must replace the
+// provisional task-card session value.
+func SessionPersistsAfterStart(s *AgentSessionDefinition) bool {
+	if s == nil {
+		return false
+	}
+	if s.Mode == "discovered" {
+		return true
+	}
+	hook, ok := LookupSessionHook(s.Mode)
+	return ok && hook.PersistAfterStart
 }

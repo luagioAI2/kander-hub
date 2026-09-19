@@ -44,7 +44,12 @@ func TestCheckCommandUsesLivenessInFullBinary(t *testing.T) {
 		}
 	}
 	t.Setenv(board.EnvBoardDir, root)
-	t.Setenv(config.EnvConfig, filepath.Join(t.TempDir(), "config.json"))
+	// macOS puts TempDir under a /var symlink, which config.Save rejects.
+	configDir, symErr := filepath.EvalSymlinks(t.TempDir())
+	if symErr != nil {
+		t.Fatal(symErr)
+	}
+	t.Setenv(config.EnvConfig, filepath.Join(configDir, "config.json"))
 	cfg := config.DefaultConfig()
 	cfg.WelcomeComplete = true
 	cfg.Language = "cn"
@@ -64,7 +69,8 @@ func TestCheckCommandUsesLivenessInFullBinary(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(data)
+	// A CRLF checkout (autocrlf on Windows) would defeat the \n replacements.
+	text := strings.ReplaceAll(string(data), "\r\n", "\n")
 	for _, replacement := range []string{"实现目标", "产生可验证结果", "满足验收", "无额外范围"} {
 		text = strings.Replace(text, board.Placeholder, replacement, 1)
 	}

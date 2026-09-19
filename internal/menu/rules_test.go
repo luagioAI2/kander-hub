@@ -20,12 +20,12 @@ func writeRulesFile(t *testing.T, path, contents string) {
 }
 
 func TestRulesIntegrationUsesInstallScope(t *testing.T) {
-	for _, agent := range []string{"codex", "claude", "grok", "cursor", "dsh"} {
+	for _, agent := range []string{"codex", "claude", "grok", "cursor", "dsh", "devin", "opencode", "kimi"} {
 		t.Run(agent, func(t *testing.T) {
 			home, project := t.TempDir(), t.TempDir()
 			t.Setenv("HOME", home)
 			t.Setenv("USERPROFILE", home)
-			globalEntry := filepath.Join(home, ".agents", "KANDER-AGENTS.md")
+			globalEntry := filepath.Join(home, ".agents", "kander", "KANDER-AGENTS.md")
 			projectEntry := filepath.Join(project, ".kander", "rules", "KANDER-AGENTS.md")
 			globalRules, projectRules := "# Global Kander rules\n", "# Project Kander rules\n"
 			writeRulesFile(t, globalEntry, globalRules)
@@ -38,6 +38,15 @@ func TestRulesIntegrationUsesInstallScope(t *testing.T) {
 			globalTarget := filepath.Join(home, "."+agent, name)
 			if agent == "dsh" {
 				globalTarget = filepath.Join(home, ".dsh", name)
+			}
+			if agent == "devin" {
+				globalTarget = filepath.Join(home, ".config", "devin", name)
+			}
+			if agent == "opencode" {
+				globalTarget = filepath.Join(home, ".config", "opencode", name)
+			}
+			if agent == "kimi" {
+				globalTarget = filepath.Join(home, ".kimi-code", name)
 			}
 			projectTarget := filepath.Join(project, name)
 			globalPaths := config.InstallPaths{Mode: config.ModeGlobal, RulesDir: filepath.Dir(globalEntry)}
@@ -77,8 +86,8 @@ func TestRulesIntegrationResolvesClaudeImportsFromRulesFile(t *testing.T) {
 	}{
 		{
 			name: "global", target: filepath.Join(home, ".claude", "CLAUDE.md"),
-			reference: "@../.agents/KANDER-AGENTS.md\n",
-			paths:     config.InstallPaths{Mode: config.ModeGlobal, RulesDir: filepath.Join(home, ".agents")},
+			reference: "@../.agents/kander/KANDER-AGENTS.md\n",
+			paths:     config.InstallPaths{Mode: config.ModeGlobal, RulesDir: filepath.Join(home, ".agents", "kander")},
 		},
 		{
 			name: "project", target: filepath.Join(project, "CLAUDE.md"),
@@ -110,7 +119,7 @@ func TestReportRulesIntegrationRepairWritesReference(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
 	t.Setenv("USERPROFILE", home)
-	paths := config.InstallPaths{Mode: config.ModeGlobal, RulesDir: filepath.Join(home, ".agents")}
+	paths := config.InstallPaths{Mode: config.ModeGlobal, RulesDir: filepath.Join(home, ".agents", "kander")}
 	writeRulesFile(t, filepath.Join(paths.RulesDir, "KANDER-AGENTS.md"), "# Kander entry\n")
 	cfg := config.DefaultConfig()
 	cfg.WelcomeComplete = true

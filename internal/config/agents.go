@@ -6,6 +6,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"sort"
 	"strings"
 	"unicode"
@@ -35,10 +36,13 @@ type AgentArgs struct {
 
 // Allocate is an argv array including the executable. Output is a plain ID or a
 // JSON object with the named top-level field. Both forms validate the resulting ID.
+// Discovery is valid only for mode "discovered" and declares how the agent CLI
+// enumerates its sessions after launch.
 type AgentSessionDefinition struct {
-	Mode      string   `json:"mode"`
-	Allocate  []string `json:"allocate,omitempty"`
-	JSONField string   `json:"json_field,omitempty"`
+	Mode      string            `json:"mode"`
+	Allocate  []string          `json:"allocate,omitempty"`
+	JSONField string            `json:"json_field,omitempty"`
+	Discovery *SessionDiscovery `json:"discovery,omitempty"`
 }
 
 var agentNamePattern = regexp.MustCompile(`^[a-z][a-z0-9_-]{0,63}$`)
@@ -140,11 +144,9 @@ func LoadAgent(name string) (AgentDefinition, error) {
 func cloneAgent(d AgentDefinition) AgentDefinition {
 	if d.Args != nil {
 		a := *d.Args
-		a.Start = append([]string{}, a.Start...)
-		a.Resume = append([]string{}, a.Resume...)
-		if a.Review != nil {
-			a.Review = append([]string{}, a.Review...)
-		}
+		a.Start = slices.Clone(a.Start)
+		a.Resume = slices.Clone(a.Resume)
+		a.Review = slices.Clone(a.Review)
 		d.Args = &a
 	}
 	d.Review = cloneReview(d.Review)
@@ -182,6 +184,7 @@ func cloneSession(src *AgentSessionDefinition) *AgentSessionDefinition {
 	}
 	out := *src
 	out.Allocate = append([]string(nil), src.Allocate...)
+	out.Discovery = cloneDiscovery(src.Discovery)
 	return &out
 }
 
@@ -279,8 +282,11 @@ func validateAgentDefinitions(raw any) (map[string]AgentDefinition, error) {
 				if _, ok := LookupSessionHook(s.Mode); !ok {
 					return nil, agentDefinitionError(name, Text("config.agent_session_hook", name, hookName))
 				}
-			} else if !contains([]string{"generated", "allocated", "none"}, s.Mode) {
+			} else if !contains([]string{"generated", "allocated", "none", "discovered"}, s.Mode) {
 				return nil, agentDefinitionError(name, Text("config.agent_session"))
+			}
+			if err := validateSessionDiscovery(name, s); err != nil {
+				return nil, err
 			}
 			if s.Mode == "allocated" {
 				if len(s.Allocate) == 0 || !validateAgentProgram(s.Allocate[0]) {
@@ -306,9 +312,11 @@ func validateAgentDefinitions(raw any) (map[string]AgentDefinition, error) {
 			}
 			// An allocation hook and an explicit allocator both supply the ID
 			// consumed by the inherited resume arguments.
-			compatibleAllocator := d.Session.Mode == "allocated" && SessionAllocatesBeforeStart(inherited)
+			compatibleAllocator := d.Session.Mode == "allocated" && SessionAllocatesBeforeStart(&AgentSessionDefinition{Mode: inherited})
 			if inherited != "" && d.Session.Mode != inherited && !compatibleAllocator {
-				if _, isHook := LookupSessionHook(inherited); isHook {
+				// Hook and discovery modes produce an agent-native id; a foreign
+				// mode would feed an incompatible value into the inherited argv.
+				if _, isHook := LookupSessionHook(inherited); isHook || inherited == "discovered" {
 					return nil, agentDefinitionError(name, Text("config.agent_session_dialect", resolved.Dialect, d.Session.Mode))
 				}
 			}

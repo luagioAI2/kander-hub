@@ -175,8 +175,13 @@ func commandResumeLegacy(root string, agent *string, launcherOverride, taskID, m
 		return err
 	}
 	previous := map[string]struct{}{}
+	sessionDef := config.AgentFor(cfg, session.Agent).Session
+	discoverSession := plan.capabilities().PaneMetadata || config.SessionPersistsAfterStart(sessionDef)
 	if takeover {
-		previous = sessionDiscoverSnapshot(config.AgentFor(cfg, session.Agent).Session.Mode, entry.TaskID, plan.capabilities().PaneMetadata)
+		previous, err = sessionDiscoverSnapshot(sessionDef, entry.TaskID, discoverSession, program, parentDir(root))
+		if err != nil {
+			return err
+		}
 	}
 	paths, err := currentInstallPaths()
 	if err != nil {
@@ -223,21 +228,20 @@ func commandResumeLegacy(root string, agent *string, launcherOverride, taskID, m
 	moved := entry
 	effective := session
 	paneCB := (func() (AgentSession, error))(nil)
-	if plan.capabilities().PaneMetadata {
-		mode := config.AgentFor(cfg, session.Agent).Session.Mode
+	if discoverSession {
 		paneCB = func() (AgentSession, error) {
 			if session.Reference != "" {
 				return session, nil
 			}
-			if !config.SessionDiscoversAfterStart(mode) {
+			if !config.SessionDiscoversAfterStart(sessionDef) {
 				return session, nil
 			}
-			ref, err := runSessionDiscoverHook(mode, moved.TaskID, previous)
+			ref, err := runSessionDiscoverHook(sessionDef, moved.TaskID, previous, program, parentDir(root))
 			if err != nil {
 				return AgentSession{}, err
 			}
 			effective = AgentSession{Agent: session.Agent, Reference: ref}
-			if takeover {
+			if takeover || config.SessionPersistsAfterStart(sessionDef) {
 				current, err := readDocumentFn(moved)
 				if err != nil {
 					return AgentSession{}, err

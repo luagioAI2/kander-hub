@@ -7,6 +7,7 @@ import (
 	"io/fs"
 	"path"
 	"regexp"
+	"slices"
 	"strings"
 )
 
@@ -157,6 +158,9 @@ func parseEmbeddedAgentFile(fileName string, data []byte) (embeddedAgent, error)
 	}
 	if !validDeclaredSessionMode(agent.Session.Mode) {
 		return embeddedAgent{}, embedAgentError(fileName, "session.mode: "+agent.Session.Mode)
+	}
+	if err := validateSessionDiscovery(fileName, &agent.Session); err != nil {
+		return embeddedAgent{}, err
 	}
 	if !validExitCommandText(agent.ExitCommand) {
 		return embeddedAgent{}, embedAgentError(fileName, "exit_command")
@@ -322,11 +326,9 @@ func cloneArgs(src *AgentArgs) *AgentArgs {
 		return nil
 	}
 	out := *src
-	out.Start = append([]string{}, src.Start...)
-	out.Resume = append([]string{}, src.Resume...)
-	if src.Review != nil {
-		out.Review = append([]string{}, src.Review...)
-	}
+	out.Start = slices.Clone(src.Start)
+	out.Resume = slices.Clone(src.Resume)
+	out.Review = slices.Clone(src.Review)
 	return &out
 }
 

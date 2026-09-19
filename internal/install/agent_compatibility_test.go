@@ -13,7 +13,7 @@ import (
 // ships pi there) and it pins its own ~/.dsh/AGENTS.md target.
 func TestBuiltinIntegrationPreservesTargetsAndBytes(t *testing.T) {
 	for _, mode := range []config.Mode{config.ModeGlobal, config.ModeProject} {
-		for _, agent := range []string{"codex", "claude", "grok", "cursor", "dsh"} {
+		for _, agent := range []string{"codex", "claude", "grok", "cursor", "dsh", "devin", "opencode", "kimi"} {
 			for _, existing := range []bool{false, true} {
 				name := string(mode) + "/" + agent + "/create"
 				if existing {
@@ -22,13 +22,22 @@ func TestBuiltinIntegrationPreservesTargetsAndBytes(t *testing.T) {
 				t.Run(name, func(t *testing.T) {
 					home := setupInstallHome(t)
 					paths := globalIntegrationPaths(t, home)
-					spelling := "~/.agents/KANDER-AGENTS.md"
+					spelling := "~/.agents/kander/KANDER-AGENTS.md"
 					target := filepath.Join(home, "."+agent, "AGENTS.md")
 					if agent == "claude" {
 						target = filepath.Join(home, ".claude", "CLAUDE.md")
 					}
 					if agent == "dsh" {
 						target = filepath.Join(home, ".dsh", "AGENTS.md")
+					}
+					if agent == "devin" {
+						target = filepath.Join(home, ".config", "devin", "AGENTS.md")
+					}
+					if agent == "opencode" {
+						target = filepath.Join(home, ".config", "opencode", "AGENTS.md")
+					}
+					if agent == "kimi" {
+						target = filepath.Join(home, ".kimi-code", "AGENTS.md")
 					}
 					if mode == config.ModeProject {
 						project := t.TempDir()

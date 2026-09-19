@@ -57,12 +57,9 @@
         "large_model": "cursor-grok-4.6-xhigh",
         "small_model": "cursor-grok-4.6-high"
       },
-      "dsh": {
-        "large_effort": "max",
-        "large_model": "deepseek-v4-pro",
-        "model": "",
-        "small_effort": "high",
-        "small_model": "deepseek-v4-flash"
+      "devin": {
+        "large_model": "swe-2-max",
+        "small_model": "swe-2-max"
       },
       "grok": {
         "large_effort": "xhigh",
@@ -70,6 +67,17 @@
         "model": "",
         "small_effort": "high",
         "small_model": ""
+      },
+      "kimi": {
+        "large_model": "",
+        "small_model": ""
+      },
+      "opencode": {
+        "large_effort": "high",
+        "large_model": "opencode-go/deepseek-v4.1-flash",
+        "model": "",
+        "small_effort": "medium",
+        "small_model": "opencode-go/deepseek-v4.1-flash"
       },
       "pi": {
         "large_effort": "high",
@@ -91,13 +99,19 @@
       "cursor": {
         "model": "cursor-grok-4.6-xhigh"
       },
-      "dsh": {
-        "effort": "max",
-        "model": "deepseek-v4-flash"
+      "devin": {
+        "model": "swe-2-max"
       },
       "grok": {
         "effort": "high",
         "model": ""
+      },
+      "kimi": {
+        "model": ""
+      },
+      "opencode": {
+        "effort": "high",
+        "model": "opencode-go/deepseek-v4.1-flash"
       },
       "pi": {
         "effort": "high",
@@ -138,9 +152,19 @@
       "cursor": {
         "model": "cursor-grok-4.6-xhigh"
       },
+      "devin": {
+        "model": "swe-2-max"
+      },
       "grok": {
         "effort": "xhigh",
         "model": ""
+      },
+      "kimi": {
+        "model": ""
+      },
+      "opencode": {
+        "effort": "high",
+        "model": "opencode-go/deepseek-v4.1-flash"
       },
       "pi": {
         "effort": "high",
